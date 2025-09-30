@@ -120,9 +120,11 @@ def fit_wall_pixels(ili, sma, distance=100):
     os = np.split(order,da)
     fma = np.zeros_like(sma)
     for j in range(len(os)):
-        (a,b,c),cov = curve_fit(cuad, ili[os[j]], sma[os[j]])
-        fma[ili[os[j]]] = cuad(ili[os[j]], a,b,c)
-    
+        if len(os[j]) > 2:
+            (a,b,c),cov = curve_fit(cuad, ili[os[j]], sma[os[j]])
+            fma[ili[os[j]]] = cuad(ili[os[j]], a,b,c)
+        else: fma[ili[os[j]]] = sma[ili[os[j]]]
+
     return fma
 
 
@@ -182,13 +184,13 @@ def frames_reconstruction(start, interval, times, len_vid):
     
     if len(prob1) == 0 and len(prob2) == 0:
         print('All good')
-        return pos
+        return pos - ifram[iv], iv
     else:    
         print('Error, Issues at intervals {:}'.format(prob2))
         print('Distance to next video: {:}'.format(ifram[ov[prob2]] - pos[prob2]) )
         print()
         # print( ifram[ev[prob1]] - pos[prob1] )
-        return pos
+        return pos - ifram[iv], iv
 
 
 #%%
@@ -227,23 +229,8 @@ uvid4 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Came
 # uvid1.count_frames(), uvid2.count_frames(), uvid3.count_frames(), uvid4.count_frames()
 
 #uvid1 -> cut at 16692, comes back 18162 (49 seconds of darkness)
-#uvid1 -> cut at 497, comes back 1967 (49 seconds of darkness)
+#dvid2 -> cut at 497, comes back 1967 (49 seconds of darkness)
 #fps 30, (supposedly 29.97)
-#%%
-
-start = 3158 + 2
-interval = 30
-
-d_times = ['16:32:30','16:41:30','16:51:14','17:00:04','17:02:56']    
-d_len_vid = [16155, 17490, 15900, 4374, 6259]
-d_frames = frames_reconstruction(start, interval, d_times, d_len_vid)
-
-u_times = ['17:32:00','17:43:12','17:54:14','18:02:30']    
-u_len_vid = [20100, 19860, 13959, 6140]
-u_frames = frames_reconstruction(start+40, interval, u_times, u_len_vid)
-
-
-
 #%%
 for i in range(6258,6259,1):
     im = np.array( dvid1.get_data(i) )
@@ -254,187 +241,188 @@ for i in range(6258,6259,1):
     plt.show()
 
 #%%
+
+start = 3158 + 2
+interval = 30
+
+d_times = ['16:32:30','16:41:30','16:51:14','17:00:04','17:02:56']    
+d_len_vid = [16155, 17490, 15900, 4374, 6259]
+d_frame, d_vid = frames_reconstruction(start, interval, d_times, d_len_vid)
+
+u_times = ['17:32:00','17:43:12','17:54:14','18:02:30']    
+u_len_vid = [20100, 19860, 13959, 6140]
+u_frame, u_vid = frames_reconstruction(start+40, interval, u_times, u_len_vid)
+
+alignment = np.zeros_like(u_vid)
+alignment[15:19], alignment[19:34], alignment[34:41] = -45, 15, -15 
+alignment[41:52], alignment[52:57], alignment[57:] = -15, -15, -39
+
+u_frame = u_frame + alignment
+#%%
+
 t1 = time()
 
+wall_distance = -5.56566902681778
 N = 60
-ini = 16000 
+
+
+d_vids = {0:dvid1, 1:dvid2, 2:dvid3, 3:dvid4, 4:dvid5}
+u_vids = {0:uvid1, 1:uvid2, 2:uvid3, 3:uvid4}
 
 ny,nx, _ = np.shape(dvid1.get_data(0))
-dxis, dyis, dzis = np.zeros((N,ny)), np.zeros((N,ny)), np.zeros((N,ny))
-dxcs, dycs, dzcs = np.zeros((N,ny)), np.zeros((N,ny)), np.zeros((N,ny))
-dsmi, dsma = np.zeros((N,ny)), np.zeros((N,ny))
+ice_x, ice_y, ice_z = np.zeros((len(d_frame),ny*2*N)), np.zeros((len(d_frame),ny*2*N)), np.zeros((len(d_frame),ny*2*N)) 
 
-t2s, t4s = [], []
-for j,i in enumerate(tqdm(range(ini, ini+N,1))):
-    im = np.array( dvid1.get_data(i) )[:,1250:2300]
+for i in tqdm(range(len(d_frame))):
+# for i in tqdm(range(4)):
+# for i in tqdm([14,15,16,17]):
     
-    t1 = time()
-    im = grayscale_im(im)
-    ili, smi, sma = laser_edges(im, sigma=10)
-    smi, sma = smi+1250, sma+1250 
-    fma = fit_wall_pixels(ili, sma)
-
-    dxcs[j], dycs[j], dzcs[j], dxis[j], dyis[j] = ice_boundary(ili, smi, fma, -5.56566902681778, cal_do, method='lm')
-    dzis[j] = dzcs[j]
-    dsmi[j], dsma[j] = smi,sma
-
+    # problem with 57 -> is when recordings cut off becuase of the 30 min
+    # problems with 15,16 -> they are when laser was off
+    if (i == 57) or (i == 16):
+        ice_x[i] = np.nan
+        ice_y[i] = np.nan
+        ice_z[i] = np.nan
+        continue
     
-uxis, uyis, uzis = np.zeros((N,ny)), np.zeros((N,ny)), np.zeros((N,ny))
-uxcs, uycs, uzcs = np.zeros((N,ny)), np.zeros((N,ny)), np.zeros((N,ny))    
-usmi, usma = np.zeros((N,ny)), np.zeros((N,ny))
+    ini = d_frame[i]
 
-for j,i in enumerate(tqdm(range(ini+40, ini+40+N,1))):
-    im = np.array( uvid1.get_data(i) )[:,1250:2330]
+    for j,l in enumerate(range(ini, ini+N)):
     
-    t1 = time()
-    im = grayscale_im(im)
-    ili, smi, sma = laser_edges(im, sigma=10)
-    smi, sma = smi+1250, sma+1250 
-    fma = fit_wall_pixels(ili, sma)
+        im = np.array( d_vids[d_vid[i]].get_data(l) )[:,1250:2300]
+        im = grayscale_im(im)
+        ili, smi, sma = laser_edges(im, sigma=10)
+        smi, sma = smi+1250, sma+1250 
+        fma = fit_wall_pixels(ili, sma)
+    
+        xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+        zi = zc
+        
+        dxi, dyi, dzi = np.copy(xi), np.copy(yi), np.copy(zi)
+        
+        # fil2_d = np.ones_like(xi, dtype=bool) * np.nanstd(dxi) > 22
+        fil2_d = np.nanstd(dxi) > 22
+        if fil2_d:
+            dxi, dyi, dzi = np.nan, np.nan, np.nan    
+        else:
+            fil3_d = np.abs(dxi - np.nanmedian(dxi)) > 25
+            dxi[fil3_d], dyi[fil3_d], dzi[fil3_d] = np.nan, np.nan, np.nan
+        
+        ice_x[i][2*j*ny:(2*j+1)*ny] = dxi
+        ice_y[i][2*j*ny:(2*j+1)*ny] = dyi
+        ice_z[i][2*j*ny:(2*j+1)*ny] = dzi
+        
+        
+    ini = u_frame[i]
 
-    uxcs[j], uycs[j], uzcs[j], uxis[j], uyis[j] = ice_boundary(ili, smi, fma, -5.56566902681778, cal_up, method='lm')
-    uzis[j] = uzcs[j]
-    usmi[j], usma[j] = smi,sma
+    for j,l in enumerate(range(ini, ini+N)):
+        
+        im = np.array( u_vids[u_vid[i]].get_data(l) )[:,1250:2330]
+        im = grayscale_im(im)
+        ili, smi, sma = laser_edges(im, sigma=10)
+        smi, sma = smi+1250, sma+1250 
+        fma = fit_wall_pixels(ili, sma)
+
+        xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+        zi = zc
+        
+        uxi, uyi, uzi = np.copy(xi), np.copy(yi), np.copy(zi)
+        uxi[:130] = np.nan
+        
+        uplim = np.median(xi - xc) + 10 #110
+        ifil = np.where( ((xi - xc) > uplim) * (ili<600) )[0]
+        fil1 = np.zeros_like(xi, dtype=bool)
+        if len(ifil)>0:
+            fil1[:ifil[-1]+1] = True        
+            uxi[fil1], uyi[fil1], uzi[fil1] = np.nan, np.nan, np.nan
+        
+        # fil2_u = np.ones_like(xi, dtype=bool) * np.nanstd(uxi) > 22
+        fil2_u = np.nanstd(uxi) > 22
+        if fil2_u:
+            uxi, uyi, uzi = np.nan, np.nan, np.nan    
+        else:
+            fil3_u = np.abs(uxi - np.nanmedian(uxi)) > 25
+            uxi[fil3_u], uyi[fil3_u], uzi[fil3_u] = np.nan, np.nan, np.nan
+
+        ice_x[i][(2*j+1)*ny:(2*j+2)*ny] = uxi
+        ice_y[i][(2*j+1)*ny:(2*j+2)*ny] = uyi
+        ice_z[i][(2*j+1)*ny:(2*j+2)*ny] = uzi
     
+# u_vid[i], u_vids[u_vid[i]].get_data(0)
+
+np.save('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_x.npy', ice_x)
+np.save('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_y.npy', ice_y)
+np.save('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_z.npy', ice_z)
 
 t2 = time()
 print(t2-t1)
-
 #%%
 
-# i = 2
-# print( np.median(uxis[i] - uxcs[i])  )
+ice_x = np.load('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_x.npy')
+ice_y = np.load('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_y.npy')
+ice_z = np.load('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_z.npy')
+
+
+#%%
+# ax = plt.figure().add_subplot(projection='3d')
+
+# i = 15
+# ax.plot( ice_z[i], ice_x[i], ice_y[i], 'b.', label=i, markersize=1, alpha=0.5 )
+# i = 63
+# ax.plot( ice_z[i], ice_x[i], ice_y[i], 'r.', label=i, markersize=1, alpha=0.5 )
+ 
+# ax.set_xlabel('z (mm)')
+# ax.set_ylabel('x (mm)')
+# ax.set_zlabel('y (mm)')
+# ax.set_box_aspect([1,1,1])
+# # plt.legend()
+# plt.show()
+
+# i = 0
 # plt.figure()
-# # plt.plot(zcs[i], ycs[i], '.-')
-# # plt.plot(zis[i], yis[i], '.-')
-# plt.plot( uxis[i] - uxcs[i], '.-')
+# for j in range(18,20):
+#     plt.plot( ice_x[i][j*ny*2:(j+1)*ny*2], ice_y[i][j*ny*2:(j+1)*ny*2], '.', label=j )
+# plt.legend()
+# # plt.axis('equal')
 # plt.grid()
 # plt.show()
 
-
-ny = 2160
-ili = np.arange(ny)
-
-xs, ys, zs = [],[],[]
-
-
-ax = plt.figure().add_subplot(projection='3d')
-for i in range(60):
-# for i in [29]:
-    
-    uxc, uyc, uzc = np.copy(uxcs[i]), np.copy(uycs[i]), np.copy(uzcs[i])
-    uxi, uyi, uzi = np.copy(uxis[i]), np.copy(uyis[i]), np.copy(uzis[i])
-    
-    dxc, dyc, dzc = np.copy(dxcs[i]), np.copy(dycs[i]), np.copy(dzcs[i])
-    dxi, dyi, dzi = np.copy(dxis[i]), np.copy(dyis[i]), np.copy(dzis[i])
-    
-    uplim = np.median(uxis[i] - uxcs[i]) + 10 #110
-    ifil = np.where( ((uxis[i] - uxcs[i]) > uplim) * (ili<600) )[0]
-    fil1 = np.zeros_like(uxis[i], dtype=bool)
-    fil1[:ifil[-1]+1] = np.nan
-    uxi[fil1], uyi[fil1], uzi[fil1] = np.nan, np.nan, np.nan
-
-    # print(i, np.nanstd(np.gradient(uxi)), np.nanstd(np.gradient(dxi)), np.nanstd(uxi), np.nanstd(dxi)  )
-    
-    # fil2_u = np.ones_like(uxis[i], dtype=bool) * np.nanstd(np.gradient(uxi)) > 4
-    # fil2_d = np.ones_like(dxis[i], dtype=bool) * np.nanstd(np.gradient(dxi)) > 4
-    
-    fil2_u = np.ones_like(uxis[i], dtype=bool) * np.nanstd(uxi) > 22
-    fil2_d = np.ones_like(dxis[i], dtype=bool) * np.nanstd(dxi) > 22
-    
-    uxi[fil2_u], uyi[fil2_u], uzi[fil2_u] = np.nan, np.nan, np.nan
-    dxi[fil2_d], dyi[fil2_d], dzi[fil2_d] = np.nan, np.nan, np.nan
-    
-    fil3_u = np.abs(uxi - np.nanmean(uxi)) > 25
-    fil3_d = np.abs(dxi - np.nanmean(dxi)) > 25
-
-    uxi[fil3_u], uyi[fil3_u], uzi[fil3_u] = np.nan, np.nan, np.nan
-    dxi[fil3_d], dyi[fil3_d], dzi[fil3_d] = np.nan, np.nan, np.nan
-
-    
-    # ax.plot( uzc, uxc, uyc, 'r-' )
-    ax.plot( uzi, uxi, uyi, 'b-', label=i )
-    
-    # ax.plot( dzc, dxc, dyc, 'r-' )
-    ax.plot( dzi, dxi, dyi, 'g-', label=i )
-    
-    # ax.plot( uzi[fil1], uxi[fil1], uyi[fil1], 'r-' )
-    # ax.plot( uzi[fil2_u], uxi[fil2_u], uyi[fil2_u], 'r-' )
-    # ax.plot( dzi[fil2_u], dxi[fil2_u], dyi[fil2_u], 'r-' )
-    
-    xs, ys, zs = np.concatenate((xs,dxi)), np.concatenate((ys,dyi)), np.concatenate((zs,dzi))
-    xs, ys, zs = np.concatenate((xs,uxi)), np.concatenate((ys,uyi)), np.concatenate((zs,uzi))
-    
-      
-ax.set_xlabel('z (mm)')
-ax.set_ylabel('x (mm)')
-ax.set_zlabel('y (mm)')
-ax.set_box_aspect([1,1,1])
-# plt.legend()
-plt.show()
-
-#%%
-
-fil = ~np.isnan(xs)
-
-cm = plt.cm.get_cmap('jet')
-ax = plt.figure().add_subplot(projection='3d')
-
-# ax.plot( zs, xs, ys, '.', markersize=3 )
-sc = ax.scatter( zs[fil], xs[fil], ys[fil], s=3, c=xs[fil], cmap=cm )
-plt.colorbar(sc)
-ax.set_xlabel('z (mm)')
-ax.set_ylabel('x (mm)')
-ax.set_zlabel('y (mm)')
-ax.set_box_aspect([1,1,1])
-# plt.legend()
+plt.figure()
+ss=  plt.scatter( ice_z[0], ice_y[0], c=ice_x[0], s=1 )
+plt.axis('equal')
+plt.colorbar(ss)
 plt.show()
 
 
 #%%
-fil = ~np.isnan(xs)
 
 plt.figure()
-# cm = plt.cm.get_cmap('jet')
-sc = plt.scatter( zs[fil], ys[fil], c=xs[fil], cmap='gray', s=1 )
-plt.colorbar(sc)
-plt.axis('equal')
-plt.show()
 
-#%%
+i = 3280 #430
+imo = np.array( dvid5.get_data(i) )
+t1 = time()
+im = grayscale_im(imo[:,1250:2300])
+ili, smi, sma = laser_edges(im, sigma=10)
+smi,sma = smi+1250, sma+1250
+fma = fit_wall_pixels(ili, sma)
+xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, -5.56566902681778, cal_do, method='lm')
+zi = zc
+t2 = time()
 
-a = np.array([1,2,3])
-b = np.copy(a)
-# b = a[::]
+t3 = time()
+xii = np.copy(xi)
 
-b[0] = 5
+fil2 = np.nanstd(xii) > 22
+if fil2:
+    xii[:] = np.nan
+else:
+    fil3 = np.abs(xii - np.nanmean(xii)) > 25 #np.nanstd(xii) * 3.
+    xii[fil3] = np.nan
+t4 = time()
 
-a,b
+print(t2-t1, t4-t3)
 
+plt.plot(zc, yc, '.-')
 
-
-#%%
-# i = 10000 + 450 #430
-# imo = np.array( dvid3.get_data(i) )
-# t1 = time()
-# im = grayscale_im(imo[:,1250:2300])
-# ili, smi, sma = laser_edges(im, sigma=10)
-# smi,sma = smi+1250, sma+1250
-# fma = fit_wall_pixels(ili, sma)
-# xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, -5.56566902681778, cal_do, method='lm')
-# zi = zc
-# t2 = time()
-
-# t3 = time()
-# xii = np.copy(xi)
-# print( np.nanstd(np.gradient(xii)), np.nanstd(xii) )
-# fil2 = np.ones_like(xii, dtype=bool) * np.nanstd(np.gradient(xii)) > 4
-# xii[fil2] = np.nan
-# # fil3 = np.abs(xii - np.nanmean(xii)) > np.nanstd(xii) * 3.
-# # xii[fil3] = np.nan
-# t4 = time()
-
-# print(t2-t1, t4-t3)
 
 # plt.figure()
 # plt.imshow(imo, cmap='gray')
@@ -452,93 +440,73 @@ a,b
 
 # from scipy.stats import kurtosis
 
-i = 10000 + 40 + 425 + 24
-imo = np.array( uvid3.get_data(i) )
-t1 = time()
-im = grayscale_im(imo[:,1250:2330])
-ili, smi, sma = laser_edges(im, sigma=10)
-smi,sma = smi+1250, sma+1250
-fma = fit_wall_pixels(ili, sma)
-xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, -5.56566902681778, cal_up, method='lm')
-zi = zc
-t2 = time()
 
+# for i in 3200 + np.arange(15,45,1):
+for i in 3200 + np.array([-39,-4]):
+    imo = np.array( uvid4.get_data(i) )
+    t1 = time()
+    im = grayscale_im(imo[:,1250:2330])
+    ili, smi, sma = laser_edges(im, sigma=10)
+    smi,sma = smi+1250, sma+1250
+    fma = fit_wall_pixels(ili, sma)
+    xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, -5.56566902681778, cal_up, method='lm')
+    zi = zc
+    t2 = time()
+    
+    
+    t3 = time()
+    xii = np.copy(xi)
+    xii[:130] = np.nan
+    
+    uplim = np.median(xi - xc) + 10 #110
+    ifil = np.where( ((xi - xc) > uplim) * (ili<600) )[0]
+    fil1 = np.zeros_like(xii, dtype=bool)
+    if len(ifil)>0:
+        fil1[:ifil[-1]+1] = True
+        xii[fil1] = np.nan
+    
+    fil2 = np.nanstd(xii) > 22
+    if fil2:
+        xii[:] = np.nan
+    else:
+        fil3 = np.abs(xii - np.nanmedian(xii)) > 25 #np.nanstd(xii) * 3.
+        xii[fil3] = np.nan
+    t4 = time()
+    
+    plt.plot(zc, yc, '.--', label=i-3200)
+# plt.plot(zi, yi, '.--')
 
-t3 = time()
-xii = np.copy(xi)
-uplim = np.median(xi - xc) + 10 #110
-ifil = np.where( ((xi - xc) > uplim) * (ili<600) )[0]
-fil1 = np.zeros_like(xii, dtype=bool)
-fil1[:ifil[-1]+1] = True
-xii[fil1] = np.nan
+# print(t2-t1, t4-t3)
+    
+    # plt.figure()
+    # plt.imshow(imo) #, cmap='gray')
+    # plt.plot(smi, ili,'b-',alpha=0.5)
+    # plt.plot(sma, ili,'r-',alpha=0.5)
+    # plt.plot(fma, ili,'y--',alpha=0.5)
+    # plt.show()
 
-# print( np.nanstd(np.gradient(xii)), np.nanstd(xii))
-# print( np.nanmedian(np.abs(np.gradient(xii))),np.nanmean(np.abs(np.gradient(xii))), 
-#       np.nanmedian(np.abs(np.gradient(xii)))/np.nanmean(np.abs(np.gradient(xii))) )
-# fil2 = np.ones_like(xii, dtype=bool) * np.nanstd(np.gradient(xii)) > 4
-fil2 = np.ones_like(xii, dtype=bool) * np.nanstd(xii) > 22
-xii[fil2] = np.nan
+# plt.figure()
+# plt.plot(xii, yi,'.-', markersize=10)
+# plt.plot(xi, yi,'.', markersize=3)
+# # plt.plot(xc, yc,'.', markersize=3)
+# plt.show()
 
-print( np.nanmedian(xii), np.nanstd(xii) * 3. )
-fil3 = np.abs(xii - np.nanmedian(xii)) > 25 #np.nanstd(xii) * 3.
-# fil3 = np.abs(xii - np.nanmedian(xii)) > np.nanstd(xii) * 3.
-xii[fil3] = np.nan
-t4 = time()
-
-print(t2-t1, t4-t3)
-
-plt.figure()
-plt.imshow(imo) #, cmap='gray')
-plt.plot(smi, ili,'b-',alpha=0.5)
-# plt.plot(sma, ili,'r-',alpha=0.5)
-plt.plot(fma, ili,'y--',alpha=0.5)
+plt.legend()
 plt.show()
 
-plt.figure()
-plt.plot(xii, yi,'.-', markersize=10)
-plt.plot(xi, yi,'.', markersize=3)
-plt.show()
 
 #%%
 
 
 a = np.array([1,2,3,3])
-b = np.array([2,1,4,6])
-c = np.array([5,2,1,2])
+b = np.array([1,2])
 
-np.min((a,b,c),axis=0)
-
-
-#%%
-# if std(dp) > 10 (std of the gradient of sma) then don't use that frame 
-# (maybe if its divided one part is usable, but I will avoid the trouble of dividing, I should have ennough frames to cover for that) 
-
-# mes,sds = [],[]
-mis,mas = [],[]
-for i in tqdm(range(10000,10500,1)):
-    im = np.array( dvid1.get_data(i) )[:,1250:2300]
-    # im = np.array( uvid1.get_data(i) )[:,1250:2300]
-    im = grayscale_im(im)
-    ili, smi, sma = laser_edges(im, sigma=10)
-    
-    # g2 = normalize( gaussian(im, 10) )
-    # dg = np.gradient(g2,axis=1) 
-    
-    mas.append(np.std(np.gradient(sma)))
-    mis.append(np.std(np.gradient(smi)))
-    
-    
-
-plt.figure()
-plt.plot(mas,'.-')
-plt.grid()
-plt.show()
-plt.figure()
-plt.plot(mis,'.-')
-plt.grid()
-plt.show()
+# a[:b[-1:]+1]
+np.size(b[-1:]+1)
 
 #%%
+
+
 
 
 
