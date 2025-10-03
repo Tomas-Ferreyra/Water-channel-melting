@@ -160,13 +160,13 @@ def ice_boundary(ili, smi, sma, wall_distace, calib, dis_bar=True, method='SLSQP
     return dwall, yc, zc, xi, yi
 
 
-def initial_frames(times):
+def initial_frames(times, fps=30):
     dis = [0]
     for l in range(1,len(times)):
         dis.append( (int(times[l][:2]) - int(times[0][:2]))*60**2 + 
                    (int(times[l][3:5]) - int(times[0][3:5]))*60 + int(times[l][6:8]) - int(times[0][6:8]) )
     dis = np.array(dis)
-    return dis*30
+    return dis*fps
 
 def frames_reconstruction(start, interval, times, len_vid):
     ifram = initial_frames(times)
@@ -184,46 +184,38 @@ def frames_reconstruction(start, interval, times, len_vid):
     
     if len(prob1) == 0 and len(prob2) == 0:
         print('All good')
-        return pos - ifram[iv], iv
+        return pos - ifram[iv], iv, pos
     else:    
         print('Error, Issues at intervals {:}'.format(prob2))
         print('Distance to next video: {:}'.format(ifram[ov[prob2]] - pos[prob2]) )
         print()
         # print( ifram[ev[prob1]] - pos[prob1] )
-        return pos - ifram[iv], iv
+        return pos - ifram[iv], iv, pos
 
 
 #%%
 # 30 fps
 
-# cal_do = np.array([ 2.64549425e+00, -3.99891836e-02,  4.61459294e+00,  1.23603665e+02,  9.28098368e-04,  3.38779738e-05, -2.29887133e-05,  3.57383747e-01,
-#                    -6.07051697e+00, -3.87935959e-01,  1.87544749e+02,  6.84006030e-06, -2.94275290e-05,  5.62181348e-04,  1.80430389e-04,  7.62471773e-06,
-#                    -3.24476172e-04, -5.05999352e-08, -2.19517311e-08, -3.35309119e-08])
+path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
 
-# cal_up = np.array([ 2.63988133e+00, -2.58954213e-02,  4.57771951e+00,  1.71317494e+02,  9.11008193e-04,  2.78947580e-05,  5.37167048e-06,  1.70425401e-01,
-#                    -6.03239571e+00, -3.27384103e-01,  1.85175687e+03, -1.17408633e-05, -3.03129810e-05,  5.71964284e-04,  1.88649976e-04,  1.18542528e-05,
-#                    -3.25451713e-04, -3.18051528e-08, -8.08787246e-09,  3.14982785e-08])
+data = np.load(path+'calibration_data.npz')
+angle_xy, angle_yz, angle_xz = float(data['arr_3']), float(data['arr_4']), float(data['arr_5'])
 
-
-cal_do = np.array([ 2.85929551e+00, -2.15384113e-02,  4.22331053e+00,  1.32362855e+03, 9.57344726e-04,  1.70426598e-05, -4.18446710e-05,  3.70903866e-01,
-                    -6.06846060e+00, -3.87914915e-01,  1.87593532e+02,  3.01258117e-06, -2.56008634e-05,  5.60267140e-04,  1.75146199e-04,  9.10059318e-06,
-                    -3.25217711e-04,  4.97555994e-08, -1.75545859e-08, -2.54218391e-08])
- 
-cal_up = np.array([ 2.87019324e+00, -3.28273855e-03,  4.18727807e+00,  1.37131050e+03, 7.09707209e-04,  9.87310806e-06,  4.13837579e-05,  2.10699779e-01,
-                    -6.03161482e+00, -3.69764818e-01,  1.98191198e+03, -1.26120666e-04, -2.89736408e-05,  5.93548674e-04,  1.92803621e-04,  1.26672913e-05,
-                    -3.25175568e-04, -1.37520884e-07, -1.22594341e-08,  2.60493380e-08])
+cal_up = data['arr_0']
+cal_do = data['arr_1']
+wall_distance = float(data['arr_2'])
 
 
-dvid1 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera down/DSC_9525.MOV', 'ffmpeg') # 16155 frames, starts 3158, 16:32:30
-dvid2 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera down/DSC_9526.MOV', 'ffmpeg') # 17490 frames,              16:41:30
-dvid3 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera down/DSC_9527.MOV', 'ffmpeg') # 15900 frames,              16:51:14 
-dvid4 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera down/DSC_9528.MOV', 'ffmpeg') # 4374 frames,               17:00:04
-dvid5 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera down/DSC_9529.MOV', 'ffmpeg') # 18075 frames, ends 6259,   17:02:56
+dvid1 = imageio.get_reader( path + 'Camera down/DSC_9525.MOV', 'ffmpeg') # 16155 frames, starts 3158, 16:32:30
+dvid2 = imageio.get_reader( path + 'Camera down/DSC_9526.MOV', 'ffmpeg') # 17490 frames,              16:41:30
+dvid3 = imageio.get_reader( path + 'Camera down/DSC_9527.MOV', 'ffmpeg') # 15900 frames,              16:51:14 
+dvid4 = imageio.get_reader( path + 'Camera down/DSC_9528.MOV', 'ffmpeg') # 4374 frames,               17:00:04
+dvid5 = imageio.get_reader( path + 'Camera down/DSC_9529.MOV', 'ffmpeg') # 18075 frames, ends 6259,   17:02:56
 
-uvid1 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera up/DSC_6011.MOV', 'ffmpeg') # 20100 frames, starts 3198, 17:32:00
-uvid2 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera up/DSC_6012.MOV', 'ffmpeg') # 19860 frames,              17:43:12
-uvid3 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera up/DSC_6013.MOV', 'ffmpeg') # 13959 frames,              17:54:14
-uvid4 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera up/DSC_6014.MOV', 'ffmpeg') # 18270 frames, ends 6140,   18:02:30
+uvid1 = imageio.get_reader( path + 'Camera up/DSC_6011.MOV', 'ffmpeg') # 20100 frames, starts 3198, 17:32:00
+uvid2 = imageio.get_reader( path + 'Camera up/DSC_6012.MOV', 'ffmpeg') # 19860 frames,              17:43:12
+uvid3 = imageio.get_reader( path + 'Camera up/DSC_6013.MOV', 'ffmpeg') # 13959 frames,              17:54:14
+uvid4 = imageio.get_reader( path + 'Camera up/DSC_6014.MOV', 'ffmpeg') # 18270 frames, ends 6140,   18:02:30
 
 # dvid1.count_frames(), dvid2.count_frames(), dvid3.count_frames(), dvid4.count_frames(), dvid5.count_frames()
 # uvid1.count_frames(), uvid2.count_frames(), uvid3.count_frames(), uvid4.count_frames()
@@ -247,11 +239,11 @@ interval = 30
 
 d_times = ['16:32:30','16:41:30','16:51:14','17:00:04','17:02:56']    
 d_len_vid = [16155, 17490, 15900, 4374, 6259]
-d_frame, d_vid = frames_reconstruction(start, interval, d_times, d_len_vid)
+d_frame, d_vid, _ = frames_reconstruction(start, interval, d_times, d_len_vid)
 
 u_times = ['17:32:00','17:43:12','17:54:14','18:02:30']    
 u_len_vid = [20100, 19860, 13959, 6140]
-u_frame, u_vid = frames_reconstruction(start+40, interval, u_times, u_len_vid)
+u_frame, u_vid, _ = frames_reconstruction(start+40, interval, u_times, u_len_vid)
 
 alignment = np.zeros_like(u_vid)
 alignment[15:19], alignment[19:34], alignment[34:41] = -45, 15, -15 
@@ -525,19 +517,24 @@ np.size(b[-1:]+1)
 # =============================================================================
 # at 25 fps
 
-bvid1 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera back/DSC_0436.MOV', 'ffmpeg') # 7272 frames, starts 3487 (for seeing 4480 )
-bvid2 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera back/DSC_0437.MOV', 'ffmpeg') # 6624 frames
-bvid3 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera back/DSC_0438.MOV', 'ffmpeg') # 6684 frames
-bvid4 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera back/DSC_0439.MOV', 'ffmpeg') # 6876 frames
-bvid5 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera back/DSC_0440.MOV', 'ffmpeg') # 6852 frames
-bvid6 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera back/DSC_0441.MOV', 'ffmpeg') # 6648 frames
-bvid7 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera back/DSC_0442.MOV', 'ffmpeg') # 4020 frames
-bvid8 = imageio.get_reader('/Volumes/Ice blocks/Scan water channel/25-08-07/Camera back/DSC_0443.MOV', 'ffmpeg') # 6924 frames, ends 5658 (for seeing 5424)
+path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
+bvid1 = imageio.get_reader( path + 'Camera back/DSC_0436.MOV', 'ffmpeg') # 7272 frames, starts 3487 (for seeing 4480), 15:31:06
+bvid2 = imageio.get_reader( path + 'Camera back/DSC_0437.MOV', 'ffmpeg') # 6624 frames                               , 15:35:56
+bvid3 = imageio.get_reader( path + 'Camera back/DSC_0438.MOV', 'ffmpeg') # 6684 frames                               , 15:40:21
+bvid4 = imageio.get_reader( path + 'Camera back/DSC_0439.MOV', 'ffmpeg') # 6876 frames                               , 15:44:49
+bvid5 = imageio.get_reader( path + 'Camera back/DSC_0440.MOV', 'ffmpeg') # 6852 frames                               , 15:49:24
+bvid6 = imageio.get_reader( path + 'Camera back/DSC_0441.MOV', 'ffmpeg') # 6648 frames                               , 15:53:58
+bvid7 = imageio.get_reader( path + 'Camera back/DSC_0442.MOV', 'ffmpeg') # 4020 frames                               , 15:58:24
+bvid8 = imageio.get_reader( path + 'Camera back/DSC_0443.MOV', 'ffmpeg') # 6924 frames, ends 5658 (for seeing 5424)  , 16:01:57
 
 
 # print(bvid1.count_frames(), bvid2.count_frames(), bvid3.count_frames(), bvid4.count_frames()) 
 # print(bvid5.count_frames(), bvid6.count_frames(), bvid7.count_frames(), bvid8.count_frames()) 
 
+times = ['15:31:06', '15:35:56', '15:40:21', '15:44:49', '15:49:24', '15:53:58', '15:58:24', '16:01:57']    
+# pol = np.array([7270,6622,6682,6874,6850,6646,4018,6922])
+b_frames = initial_frames(times, fps=25)
+b_frames
 #%%
 
 for i in range(5656,5659,1):
@@ -557,9 +554,9 @@ def nan_argmax(peks, pprop):
         return np.nan
 
 
-pes, aas = [],[] 
+pes, aas, ies = [],[],[]
+
 for i in tqdm(range(4480, 7271, 10)):
-# for i in [5350,5360,5370]: #[5000,5460]:
     im = np.array( bvid1.get_data(i) )
     im = grayscale_im(im)
     img = gaussian(im,15)
@@ -569,32 +566,304 @@ for i in tqdm(range(4480, 7271, 10)):
 
     pes.append(pep)
     aas.append(aa)
+    ies.append(i+b_frames[0])
+
+for i in tqdm(range(0, 6623, 10)):
+    im = np.array( bvid2.get_data(i) )
+    im = grayscale_im(im)
+    img = gaussian(im,15)
+    aa = np.mean( img[1100:1300,700:3500],axis=0 )
+    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
+    pep = nan_argmax(peks, pprop)
+
+    pes.append(pep)
+    aas.append(aa)
+    ies.append(i+b_frames[1])
     
-    # plt.figure()
-    # plt.imshow(img)
-    # plt.show()
-    # plt.figure()
-    # plt.plot(aa, '-')
-    # plt.plot(peks,aa[peks],'k.')
-    # plt.plot(pep,aa[pep],'r.')
-    # plt.show()
+for i in tqdm(range(0, 6683, 10)):
+    im = np.array( bvid3.get_data(i) )
+    im = grayscale_im(im)
+    img = gaussian(im,15)
+    aa = np.mean( img[1100:1300,700:3500],axis=0 )
+    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
+    pep = nan_argmax(peks, pprop)
+
+    pes.append(pep)
+    aas.append(aa)
+    ies.append(i+b_frames[2])
     
+for i in tqdm(range(0, 6875, 10)):
+    im = np.array( bvid4.get_data(i) )
+    im = grayscale_im(im)
+    img = gaussian(im,15)
+    aa = np.mean( img[1100:1300,700:3500],axis=0 )
+    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
+    pep = nan_argmax(peks, pprop)
+
+    pes.append(pep)
+    aas.append(aa)
+    ies.append(i+b_frames[3])
     
+for i in tqdm(range(0, 6851, 10)):
+    im = np.array( bvid5.get_data(i) )
+    im = grayscale_im(im)
+    img = gaussian(im,15)
+    aa = np.mean( img[1100:1300,700:3500],axis=0 )
+    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
+    pep = nan_argmax(peks, pprop)
+
+    pes.append(pep)
+    aas.append(aa)
+    ies.append(i+b_frames[4])
+    
+for i in tqdm(range(0, 6647, 10)):
+    im = np.array( bvid6.get_data(i) )
+    im = grayscale_im(im)
+    img = gaussian(im,15)
+    aa = np.mean( img[1100:1300,700:3500],axis=0 )
+    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
+    pep = nan_argmax(peks, pprop)
+
+    pes.append(pep)
+    aas.append(aa)
+    ies.append(i+b_frames[5])
+    
+for i in tqdm(range(0, 4019, 10)):
+    im = np.array( bvid7.get_data(i) )
+    im = grayscale_im(im)
+    img = gaussian(im,15)
+    aa = np.mean( img[1100:1300,700:3500],axis=0 )
+    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
+    pep = nan_argmax(peks, pprop)
+
+    pes.append(pep)
+    aas.append(aa)
+    ies.append(i+b_frames[6])
+    
+for i in tqdm(range(0, 5423, 10)):
+    im = np.array( bvid8.get_data(i) )
+    im = grayscale_im(im)
+    img = gaussian(im,15)
+    aa = np.mean( img[1100:1300,700:3500],axis=0 )
+    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
+    pep = nan_argmax(peks, pprop)
+
+    pes.append(pep)
+    aas.append(aa)
+    ies.append(i+b_frames[7])
+    
+pes = np.array(pes)
+ies = np.array(ies)
+#%%
+
+start = 3158 + 2
+interval = 30
+
+d_times = ['16:32:30','16:41:30','16:51:14','17:00:04','17:02:56']    
+d_len_vid = [16155, 17490, 15900, 4374, 6259]
+d_frame, d_vid, d_fpos = frames_reconstruction(start, interval, d_times, d_len_vid)
+
+u_times = ['17:32:00','17:43:12','17:54:14','18:02:30']    
+u_len_vid = [20100, 19860, 13959, 6140]
+u_frame, u_vid, u_fpos = frames_reconstruction(start+40, interval, u_times, u_len_vid)
+
+
+u_frame, u_vid, u_len_vid
 
 #%%
+
+cosos = [2308,
+         2168,
+         2171,
+         1880,
+         1880,
+         1880,
+         1880,
+         1679,
+         1679,
+         1679,
+         1679,
+         1529,
+         1529,
+         1529,
+         1529,
+         1529,
+         1529,
+         1422,
+         1422,
+         1422,
+         1240,
+         1240,
+         1240,
+         1065,
+         1065,
+         1065,
+         1065,
+         1065,
+         784,
+         784,
+         784,
+         784,
+         784,
+         784,
+         784,
+         784,
+         665,
+         665,
+         665,
+         665,
+         665,
+         665,
+         594,
+         484,
+         484,
+         484,
+         484,
+         484,
+         484,
+         369,
+         369,
+         369,
+         369,
+         369,
+         172,
+         172,
+         172,
+         172,
+         172,
+         172,
+         128,
+         128,
+         128,
+         128,
+         128]
 
 plt.figure()
 # for i in range(10):
 #     plt.plot(aas[i],'-',zorder=-1)
 #     plt.plot(pes[i],aas[i][pes[i]],'k.',zorder=0)
 
+plt.plot((ies-4480)/25, pes,'.-')
+# plt.plot( (d_fpos-start)/30, [100]*len(d_fpos), '.' )
+# plt.plot( (u_fpos-start-40)/30, [100]*len(u_fpos), '.' )
+plt.plot( (u_fpos-start-40)/30, cosos, '.' )
 
-plt.plot(pes,'.-')
+plt.show()
 
+#%%
+
+# cal frame
+path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
+bcal = imageio.get_reader( path + 'Camera back/DSC_0435.MOV', 'ffmpeg') # 7272 frames, starts 3487 (for seeing 4480), 15:31:06
+
+im = np.array( bcal.get_data(225) )
+im = grayscale_im(im[700:1300,700:3500])
+# im = grayscale_im(im)
+
+plt.figure()
+plt.imshow(im, cmap='gray')
+plt.show()
+
+#%%
+from scipy.stats import linregress
+
+posit = [[150,3350],
+         [140,3165],
+         [130,2984],
+         [120,2805],
+         [110,2628],
+         [100,2454],
+         [ 90,2282],
+         [ 80,2112],
+         [ 70,1943],
+         [ 60,1778],
+         [ 50,1616],
+         [ 40,1455],
+         [ 30,1296],
+         [ 20,1138],
+         [ 10,986]]
+posit = np.array(posit)
+posit[:,1] = posit[:,1]-700 
+
+a = linregress(posit[:,1], posit[:,0])
+b = np.polyfit(posit[:,1], posit[:,0], 2)
+ee = np.linspace(100,2800,20)  
+
+plt.figure()
+# plt.imshow(im, cmap='gray')
+# plt.plot( posit[:,1], [250]*15, '.' )
+
+plt.plot( posit[:,1], posit[:,0], '.' )
+plt.plot( ee, ee*a.slope+a.intercept,'--' )
+plt.plot( ee, ee**2 * b[0]+ee*b[1]+b[2],'--' )
+
+plt.show()
+#%%
+
+cosos = np.array(cosos)
+disp = cosos**2 *b[0] + cosos * b[1] + b[2]
+disp = disp[0] - disp
+
+print(disp)
+
+np.save(path+'back_dispalcement.npy',disp)
+#%%
+# =============================================================================
+# aaaa
+# =============================================================================
+path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
+ice_x = np.load(path+'ice_x.npy')
+ice_y = np.load(path+'ice_y.npy')
+ice_z = np.load(path+'ice_z.npy')
+
+#%%
+i = 19
+plt.figure()
+plt.scatter(ice_z[i], ice_y[i], c=ice_x[i], s=1, cmap='jet')
+plt.axis('equal')
+plt.show()
+
+#%%
+
+mes, sd = [],[]
+for i in range(len(ice_x)):
+    mes.append( np.nanmean(ice_x[i]) )
+    sd.append( np.nanstd(ice_x[i]) )
+#%%
+fil = np.isnan(mes)
+ss = linregress( np.arange(65)[~fil], (mes + disp)[~fil] )
+dd = np.arange(65)
+
+plt.figure()
+plt.plot( mes, '.-' )
+plt.plot( mes + disp, '.-' )
+plt.plot( dd, dd*ss.slope+ss.intercept,'--' )
+# plt.plot( sd, '.-')
+plt.grid()
 plt.show()
 
 
 
+
+#%%
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #%%
 
 
@@ -603,18 +872,23 @@ plt.show()
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 #%%
 
-ii,jj = [],[]
-for i,j in tqdm(enumerate(range(10000, 10060,1))):
-    ii.append(i)
-    jj.append(j)
-    
-print( np.vstack((ii, jj)).T )
 
 
 
-#%%
+
 
 
 

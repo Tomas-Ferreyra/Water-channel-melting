@@ -674,11 +674,15 @@ mw = (-7.5+3)/(294+390)
 angle_xy = np.arctan(np.abs(mw))
 wall_dist = np.cos(angle_xy) * -7.5 + np.sin(angle_xy) * 294
 angle_yz = -0.004228629492427357
+angle_xz = 0
 
 d_pos_r = rotate_coords(d_pos, [0, 1], angle_xy)
 u_pos_r = rotate_coords(u_pos, [0, 1], angle_xy)
 d_pos_r = rotate_coords(d_pos_r, [1, 2], angle_yz)
 u_pos_r = rotate_coords(u_pos_r, [1, 2], angle_yz)
+d_pos_r = rotate_coords(d_pos_r, [0, 2], angle_xz)
+u_pos_r = rotate_coords(u_pos_r, [0, 2], angle_xz)
+#small angles, so order of rotation doesn't matter too much
 
 print(np.shape(d_pos), np.shape(d_pix))
 
@@ -772,13 +776,13 @@ plt.show()
 #%%
 
 # Export calibration amgles and wall distance
-cal_dat = [lab_u.x, lab_d.x, wall_dist, angle_xy, angle_yz]
+cal_dat = [lab_u.x, lab_d.x, wall_dist, angle_xy, angle_yz, angle_xz]
 np.savez(path+'calibration_data.npz', *cal_dat)
 
 data = np.load(path+'calibration_data.npz')
-lu,ld, wd, axy, ayz = data['arr_0'], data['arr_1'], float(data['arr_2']), float(data['arr_3']), float(data['arr_4'])
+lu,ld, wd, axy, ayz, axz = data['arr_0'], data['arr_1'], float(data['arr_2']), float(data['arr_3']), float(data['arr_4']), float(data['arr_5'])
 
-lu ,ld, wd, axy, ayz
+lu ,ld, wd, axy, ayz, axz
 
 
 
@@ -796,6 +800,7 @@ lu ,ld, wd, axy, ayz
 
 
 
+#%%
 
 
 
