@@ -7,6 +7,7 @@ Created on Tue Sep  9 14:46:17 2025
 """
 
 import imageio.v2 as imageio
+import cv2
 # import imageio.v3 as iio
 from tqdm import tqdm
 from time import time, sleep
@@ -25,7 +26,7 @@ from scipy.interpolate import griddata
 from skimage.color import rgb2gray
 from skimage.filters import gaussian, try_all_threshold, rank, butterworth, frangi, sato
 from skimage.morphology import remove_small_objects, disk, binary_erosion, binary_closing
-from skimage.measure import label, regionprops
+from skimage.measure import label, regionprops, regionprops_table
 from skimage.segmentation import felzenszwalb, mark_boundaries
 from skimage.feature import blob_log
 from skimage.util import img_as_ubyte
@@ -104,10 +105,21 @@ def laser_edges(im, sigma=20):
     ny,nx = np.shape(im)
     g2 = gaussian(im, sigma)
     dg = normalize( np.gradient(g2,axis=1) )
+    mdg = np.median(dg)
 
     ili = np.arange(ny)
-    imi = np.argmin(dg, axis=1  ) 
-    ima = np.argmax(dg, axis=1  ) 
+
+    # imi = np.argmin(dg, axis=1  ) 
+    # ima = np.argmax(dg, axis=1  ) 
+    # ima = np.array( [ (find_peaks( dg[i,:], height= mdg+0.1, prominence=0.1)[0])[0] for i in range(len(dg)) ] )
+    # imi = np.array( [ (find_peaks(-dg[i,:], height=-mdg+0.1, prominence=0.1)[0])[0] for i in range(len(dg)) ] )
+    ima, imi = np.full(len(dg), np.nan, dtype=int), np.full(len(dg), np.nan, dtype=int)
+    for j in range(len(dg)):
+        arr1 = find_peaks( dg[j,:], height= mdg+0.1, prominence=0.1)[0]
+        arr2 = find_peaks(-dg[j,:], height=-mdg+0.1, prominence=0.1)[0]    
+        ima[j] = np.concatenate( (arr1[:1],[np.argmax(dg[j,:])]) )[0]
+        imi[j] = np.concatenate( (arr2[:1],[np.argmin(dg[j,:])]) )[0]
+
     smi, sma = subpixel(normalize(dg), imi, ili), subpixel(normalize(dg), ima, ili)
     return ili, smi, sma
 
@@ -192,11 +204,85 @@ def frames_reconstruction(start, interval, times, len_vid):
         # print( ifram[ev[prob1]] - pos[prob1] )
         return pos - ifram[iv], iv, pos
 
+def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1798, n_recons=60):
+    """
+    Returns the frames where to start the recontruction of each profile
+
+    Parameters
+    ----------
+    f_mes : array
+        Mean brighness of image at LED position for each frame .
+    lens : list
+        List of lengths (in frames) of each video.
+    lims : [start,end]
+        starting and ending frames of experiment.
+    divisor : int, optional
+        How many profiles to be reconstructed per minute. The default is 2.
+    threshold : float, optional
+        Intensity threshold for f_mes. If f_mes>threshold then the led in that frame is considered lit. The default is 10.
+    minute_interval : int, optional
+        Number of frames per minute (more specifically frames between LED blinks). The default is 1798.
+    n_recons : int, optional
+        Number of frames to use for surface reconstruction. The default is 60.
+
+    Returns
+    -------
+    all_frames : array
+        Frames where to start reconstruction.
+    vid: array
+        Video in which all_frames are found.
+    frames_led : array
+        Frames where LED turns on.
+    """
+    start,end = lims[0], lims[1]
+    lens = lens[1:]
+    frames_led = np.where(np.diff((f_mes>threshold)*1.)>0.5)[0]+1
+    
+    cuts = np.cumsum(lens)
+    gaps = np.where(np.abs(np.diff(frames_led) - minute_interval) > 2)[0] #cut in video between this blink and next blink
+        
+    missing_frames = minute_interval - np.diff(frames_led)[gaps]
+    missing_pos = np.searchsorted(cuts, frames_led[gaps])
+    
+    tcuts = np.copy(cuts)
+    for i in range(len(missing_frames)): tcuts[cuts>cuts[missing_pos[i]]] += missing_frames[i]
+    
+    tvid = np.zeros(cuts[-1]+np.sum(missing_frames))
+    for i in range(len(tcuts)-1): tvid[tcuts[i]:tcuts[i+1]] = i+1
+    for i in range(len(missing_frames)): tvid[tcuts[missing_pos[i]]:tcuts[missing_pos[i]]+missing_frames[i]] = np.nan
+    
+    tframes_led = np.copy(frames_led)
+    for i in range(len(missing_frames)): tframes_led[frames_led>cuts[missing_pos[i]]] += missing_frames[i]
+    
+    dist_frames = minute_interval/divisor
+    intermediate_frames = []
+    for i in range(1,divisor):
+        intermediate_frames.append( tframes_led + int(dist_frames*i) )
+    
+    tall_frames = np.sort( np.hstack((tframes_led, np.hstack(intermediate_frames) )) )
+    all_frames = np.copy(tall_frames)
+    for i in range(len(missing_frames)): all_frames[tall_frames>tcuts[missing_pos[i]]] += -missing_frames[i]
+    
+    fil = (all_frames>=start) * (all_frames<=end+np.sum(missing_frames))
+    all_frames = all_frames[fil]
+    
+    if np.isnan( np.sum(tvid[tall_frames]) ) or np.isnan( np.sum(tvid[tall_frames+n_recons]) ):
+        print('One or more profiles cannot be fully reconstructed')
+        plt.figure()
+        plt.vlines(tall_frames,0,len(lens)-1, colors='red',label='Start frame',alpha=0.5)
+        plt.vlines(tall_frames+n_recons,0,len(lens)-1, colors='green',label='End frame',alpha=0.5)
+        plt.plot( np.arange(len(tvid)), tvid,'.-' )
+        plt.legend()
+        plt.show()
+    else: print('No issues')        
+        
+    return all_frames, tvid[all_frames].astype(int), frames_led
+
 
 #%%
 # 30 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
+path = '/Volumes/Ice blocks/Scan water channel/25-09-29/'
 
 data = np.load(path+'calibration_data.npz')
 angle_xy, angle_yz, angle_xz = float(data['arr_3']), float(data['arr_4']), float(data['arr_5'])
@@ -206,93 +292,149 @@ cal_do = data['arr_1']
 wall_distance = float(data['arr_2'])
 
 
-dvid1 = imageio.get_reader( path + 'Camera down/DSC_9525.MOV', 'ffmpeg') # 16155 frames, starts 3158, 16:32:30
-dvid2 = imageio.get_reader( path + 'Camera down/DSC_9526.MOV', 'ffmpeg') # 17490 frames,              16:41:30
-dvid3 = imageio.get_reader( path + 'Camera down/DSC_9527.MOV', 'ffmpeg') # 15900 frames,              16:51:14 
-dvid4 = imageio.get_reader( path + 'Camera down/DSC_9528.MOV', 'ffmpeg') # 4374 frames,               17:00:04
-dvid5 = imageio.get_reader( path + 'Camera down/DSC_9529.MOV', 'ffmpeg') # 18075 frames, ends 6259,   17:02:56
+dvids = [cv2.VideoCapture( path + 'Camera down/DSC_6033.MOV'), # starts 3317
+         cv2.VideoCapture( path + 'Camera down/DSC_6034.MOV'), # 
+         cv2.VideoCapture( path + 'Camera down/DSC_6035.MOV'), #
+         cv2.VideoCapture( path + 'Camera down/DSC_6036.MOV'), #
+         cv2.VideoCapture( path + 'Camera down/DSC_6037.MOV') # ends in last frame
+         ]
 
-uvid1 = imageio.get_reader( path + 'Camera up/DSC_6011.MOV', 'ffmpeg') # 20100 frames, starts 3198, 17:32:00
-uvid2 = imageio.get_reader( path + 'Camera up/DSC_6012.MOV', 'ffmpeg') # 19860 frames,              17:43:12
-uvid3 = imageio.get_reader( path + 'Camera up/DSC_6013.MOV', 'ffmpeg') # 13959 frames,              17:54:14
-uvid4 = imageio.get_reader( path + 'Camera up/DSC_6014.MOV', 'ffmpeg') # 18270 frames, ends 6140,   18:02:30
+uvids = [cv2.VideoCapture( path + 'Camera up/DSC_9559.MOV'), # starts 3381
+         cv2.VideoCapture( path + 'Camera up/DSC_9560.MOV'), #
+         cv2.VideoCapture( path + 'Camera up/DSC_9561.MOV'), #
+         cv2.VideoCapture( path + 'Camera up/DSC_9562.MOV') # ends in last frame
+         ]
 
-# dvid1.count_frames(), dvid2.count_frames(), dvid3.count_frames(), dvid4.count_frames(), dvid5.count_frames()
-# uvid1.count_frames(), uvid2.count_frames(), uvid3.count_frames(), uvid4.count_frames()
+dlens = [0]+[int(dvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(dvids))]
+ulens = [0]+[int(uvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(uvids))]
 
-#uvid1 -> cut at 16692, comes back 18162 (49 seconds of darkness)
-#dvid2 -> cut at 497, comes back 1967 (49 seconds of darkness)
 #fps 30, (supposedly 29.97)
 #%%
-for i in range(6258,6259,1):
-    im = np.array( dvid1.get_data(i) )
-    # im = grayscale_im(im)
+l = 0
+
+for i in range(3315,3318,2):
+    dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
+    im = np.array( dvids[l].read()[1] )[:,:,::-1]
+    im = grayscale_im(im)
     plt.figure()
-    plt.imshow(im) 
+    plt.imshow(im, cmap='gray') 
     plt.title(i)
     plt.show()
 
+# for i in range(3380,3386,2):
+#     uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+#     im = np.array( uvids[l].read()[1] )[:,:,::-1]
+#     # im = grayscale_im(im)
+#     plt.figure()
+#     plt.imshow(im, cmap='gray') 
+#     plt.title(i)
+#     plt.show()
+
+
+
+#%%
+# Led finding
+d_led = [122,158,2656,2692] 
+u_led = [1895,1933,2891,2926] 
+
+u_mes, d_mes = [],[]
+
+for l in range(len(dvids)):
+    dvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for j in tqdm(range(dlens[l])):
+        im = np.array( dvids[l].read()[1] )[d_led[0]:d_led[1],d_led[2]:d_led[3]] 
+        im = grayscale_im(im)
+        d_mes.append(np.mean(im))
+
+for l in range(len(uvids)):
+    uvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for j in tqdm(range(ulens[l])):
+        im = np.array( uvids[l].read()[1] )[u_led[0]:u_led[1],u_led[2]:u_led[3]] 
+        im = grayscale_im(im)
+        u_mes.append(np.mean(im))
+
+np.savez(path+'led_blink.npz', u_mes=u_mes, d_mes=d_mes)
+
 #%%
 
-start = 3158 + 2
-interval = 30
+blink = np.load(path+'led_blink.npz')
+u_mes,d_mes = blink['u_mes'], blink['d_mes']
 
-d_times = ['16:32:30','16:41:30','16:51:14','17:00:04','17:02:56']    
-d_len_vid = [16155, 17490, 15900, 4374, 6259]
-d_frame, d_vid, _ = frames_reconstruction(start, interval, d_times, d_len_vid)
+plt.figure()
+plt.plot( u_mes, '.-')
+plt.plot( d_mes, '.-')
+plt.show()
 
-u_times = ['17:32:00','17:43:12','17:54:14','18:02:30']    
-u_len_vid = [20100, 19860, 13959, 6140]
-u_frame, u_vid, _ = frames_reconstruction(start+40, interval, u_times, u_len_vid)
+#%%
 
-alignment = np.zeros_like(u_vid)
-alignment[15:19], alignment[19:34], alignment[34:41] = -45, 15, -15 
-alignment[41:52], alignment[52:57], alignment[57:] = -15, -15, -39
+N = 60
+shift = 64
+end = np.min([np.sum(ulens),np.sum(dlens)])
+d_frame, d_vid, d_leds = frame_position(d_mes, dlens, [3317,end], n_recons=N)
+u_frame, u_vid, u_leds = frame_position(u_mes, ulens, [3381,end], n_recons=N)
+d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
 
-u_frame = u_frame + alignment
+d_frame, u_frame = d_frame+shift, u_frame+shift
+d_vid, u_vid = np.searchsorted(d_cuts[1:], d_frame), np.searchsorted(u_cuts[1:], u_frame)
+
+d_Nvid, u_Nvid = np.searchsorted(d_cuts[1:], d_frame+N),  np.searchsorted(u_cuts[1:], u_frame+N)
+if np.sum(u_Nvid-u_vid) > 0:
+    ind = np.where( (u_Nvid-u_vid)>0 )[0]
+    overshoot = u_frame[ind]+N - u_cuts[u_vid[ind]+1]     
+    print(f'Issue with u at {ind}. Number of frames in next video: {overshoot}')
+if np.sum(d_Nvid-d_vid) > 0:
+    ind = np.where( (d_Nvid-d_vid)>0 )[0]
+    overshoot = d_frame[ind]+N - d_cuts[d_vid[ind]+1]
+    print(f'Issue with d at {ind}. Number of frames in next video: {overshoot}')
+
+print(end, d_frame[-1]+N,  u_frame[-1]+N)
+
+plt.figure()
+plt.plot( u_mes, '.-')
+plt.vlines( u_frame,0,70,colors='red')
+# plt.vlines( u_frame+N,0,70,colors='magenta')
+plt.vlines( u_cuts,0,70,colors='k',alpha=0.5)
+# plt.scatter( u_frame, [50]*len(u_frame), c=u_vid )
+plt.show()
+plt.figure()
+plt.plot( d_mes, '.-')
+plt.vlines( d_frame,0,70,colors='red')
+# plt.vlines( u_frame+N,0,70,colors='magenta')
+plt.vlines( d_cuts,0,70,colors='k',alpha=0.5)
+# plt.scatter( d_frame, [50]*len(d_frame), c=d_vid )
+plt.show()
+
 #%%
 
 t1 = time()
 
-wall_distance = -5.56566902681778
-N = 60
-
-
-d_vids = {0:dvid1, 1:dvid2, 2:dvid3, 3:dvid4, 4:dvid5}
-u_vids = {0:uvid1, 1:uvid2, 2:uvid3, 3:uvid4}
-
-ny,nx, _ = np.shape(dvid1.get_data(0))
+ny,nx, _ = np.shape(dvids[0].read()[1])
 ice_x, ice_y, ice_z = np.zeros((len(d_frame),ny*2*N)), np.zeros((len(d_frame),ny*2*N)), np.zeros((len(d_frame),ny*2*N)) 
 
 for i in tqdm(range(len(d_frame))):
-# for i in tqdm(range(4)):
-# for i in tqdm([14,15,16,17]):
+# for i in tqdm(range(1)):
     
-    # problem with 57 -> is when recordings cut off becuase of the 30 min
-    # problems with 15,16 -> they are when laser was off
-    if (i == 57) or (i == 16):
-        ice_x[i] = np.nan
-        ice_y[i] = np.nan
-        ice_z[i] = np.nan
-        continue
-    
-    ini = d_frame[i]
+    vid = dvids[d_vid[i]]
+    ini = d_frame[i] - d_cuts[d_vid[i]]
+    vid.set(cv2.CAP_PROP_POS_FRAMES, ini)
 
-    for j,l in enumerate(range(ini, ini+N)):
-    
-        im = np.array( d_vids[d_vid[i]].get_data(l) )[:,1250:2300]
+    for j in range(N):
+        
+        im = np.array( vid.read()[1] )[:,1100:2400]
         im = grayscale_im(im)
+        im[2090:] = 0
         ili, smi, sma = laser_edges(im, sigma=10)
-        smi, sma = smi+1250, sma+1250 
+        smi, sma = smi+1100, sma+1100 
         fma = fit_wall_pixels(ili, sma)
     
-        xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+        # xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+        xc, yc, zc, xi, yi = ice_boundary(ili, smi, sma, wall_distance, cal_do, method='lm')
         zi = zc
         
         dxi, dyi, dzi = np.copy(xi), np.copy(yi), np.copy(zi)
         
         # fil2_d = np.ones_like(xi, dtype=bool) * np.nanstd(dxi) > 22
-        fil2_d = np.nanstd(dxi) > 22
+        fil2_d = np.nanstd(dxi) > 23
         if fil2_d:
             dxi, dyi, dzi = np.nan, np.nan, np.nan    
         else:
@@ -303,32 +445,34 @@ for i in tqdm(range(len(d_frame))):
         ice_y[i][2*j*ny:(2*j+1)*ny] = dyi
         ice_z[i][2*j*ny:(2*j+1)*ny] = dzi
         
-        
-    ini = u_frame[i]
+    vid = uvids[u_vid[i]]
+    ini = u_frame[i] - u_cuts[u_vid[i]]
+    vid.set(cv2.CAP_PROP_POS_FRAMES, ini)
 
-    for j,l in enumerate(range(ini, ini+N)):
+    for j in range(N):
         
-        im = np.array( u_vids[u_vid[i]].get_data(l) )[:,1250:2330]
+        im = np.array( vid.read()[1] )[:,1400:2600]
         im = grayscale_im(im)
         ili, smi, sma = laser_edges(im, sigma=10)
-        smi, sma = smi+1250, sma+1250 
+        smi, sma = smi+1400, sma+1400 
         fma = fit_wall_pixels(ili, sma)
 
-        xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+        # xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+        xc, yc, zc, xi, yi = ice_boundary(ili, smi, sma, wall_distance, cal_up, method='lm')
         zi = zc
         
         uxi, uyi, uzi = np.copy(xi), np.copy(yi), np.copy(zi)
-        uxi[:130] = np.nan
+        # uxi[:130] = np.nan
         
         uplim = np.median(xi - xc) + 10 #110
-        ifil = np.where( ((xi - xc) > uplim) * (ili<600) )[0]
+        ifil = np.where( ((xi - xc) > uplim) * (ili<650) )[0]
         fil1 = np.zeros_like(xi, dtype=bool)
         if len(ifil)>0:
             fil1[:ifil[-1]+1] = True        
             uxi[fil1], uyi[fil1], uzi[fil1] = np.nan, np.nan, np.nan
         
         # fil2_u = np.ones_like(xi, dtype=bool) * np.nanstd(uxi) > 22
-        fil2_u = np.nanstd(uxi) > 22
+        fil2_u = np.nanstd(uxi) > 23
         if fil2_u:
             uxi, uyi, uzi = np.nan, np.nan, np.nan    
         else:
@@ -341,17 +485,17 @@ for i in tqdm(range(len(d_frame))):
     
 # u_vid[i], u_vids[u_vid[i]].get_data(0)
 
-np.save('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_x.npy', ice_x)
-np.save('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_y.npy', ice_y)
-np.save('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_z.npy', ice_z)
+np.save(path+'ice_x_0.npy', ice_x)
+np.save(path+'ice_y_0.npy', ice_y)
+np.save(path+'ice_z_0.npy', ice_z)
 
 t2 = time()
 print(t2-t1)
 #%%
 
-ice_x = np.load('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_x.npy')
-ice_y = np.load('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_y.npy')
-ice_z = np.load('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_z.npy')
+ice_x = np.load(path+'ice_x_0.npy')
+ice_y = np.load(path+'ice_y_0.npy')
+ice_z = np.load(path+'ice_z_0.npy')
 
 
 #%%
@@ -378,32 +522,96 @@ ice_z = np.load('/Volumes/Ice blocks/Scan water channel/25-08-07/ice_z.npy')
 # plt.grid()
 # plt.show()
 
-plt.figure()
-ss=  plt.scatter( ice_z[0], ice_y[0], c=ice_x[0], s=1 )
+i = 60
+plt.figure( figsize=(5,10))
+ss=  plt.scatter( ice_z[i], ice_y[i], c=ice_x[i], s=1 )
 plt.axis('equal')
-plt.colorbar(ss)
+cbar = plt.colorbar(ss, location='top')
+# plt.xlim(-50,150)
+plt.xlabel(r'$x$ (mm)')
+plt.ylabel(r'$y$ (mm)')
+plt.title(r'$h$ (mm)',fontsize=12, pad=50)
+plt.savefig('./Documents/prof4.png',dpi=200, bbox_inches='tight')
 plt.show()
 
 
 #%%
 
-plt.figure()
+# i = 15000 #430
+# l = 0
 
-i = 3280 #430
-imo = np.array( dvid5.get_data(i) )
+# t0=time()
+# dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+# imo = np.array( dvids[l].read()[1] )[:,:,::-1]
+# t1 = time()
+# # im = grayscale_im(imo[:2090,1100:2400])
+# im = grayscale_im(imo[:,1100:2400])
+# im[2090:] = 0
+# ili, smi, sma = laser_edges(im, sigma=10)
+# smi,sma = smi+1100, sma+1100
+# fma = fit_wall_pixels(ili, sma)
+# xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+# zi = zc
+# t2 = time()
+
+# t3 = time()
+# xii = np.copy(xi)
+
+# fil2 = np.nanstd(xii) > 22
+# if fil2:
+#     xii[:] = np.nan
+# else:
+#     fil3 = np.abs(xii - np.nanmean(xii)) > 25 #np.nanstd(xii) * 3.
+#     xii[fil3] = np.nan
+# t4 = time()
+
+# print(t2-t1, t4-t3, t1-t0)
+
+
+# plt.figure()
+# # plt.imshow(imo, cmap='gray')
+# plt.imshow(im, cmap='gray')
+# plt.plot(smi, ili,'b-',alpha=0.5)
+# # plt.plot(sma, ili,'r-',alpha=0.5)
+# plt.plot(fma, ili,'y--',alpha=0.5)
+# plt.show()
+
+i = 0 #430
+algo = 10
+# l = 3
+
+t0 = time()
+# uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+# imo = np.array( uvids[l].read()[1] )[:,:,::-1]
+
+vid = uvids[u_vid[i]]
+ini = u_frame[i] - u_cuts[u_vid[i]]
+vid.set(cv2.CAP_PROP_POS_FRAMES, ini + algo)
+imo = np.array( vid.read()[1] )
+# im = grayscale_im(im)
+
 t1 = time()
-im = grayscale_im(imo[:,1250:2300])
+
+im = grayscale_im(imo[:,1400:2600])
 ili, smi, sma = laser_edges(im, sigma=10)
-smi,sma = smi+1250, sma+1250
+smi,sma = smi+1400, sma+1400
 fma = fit_wall_pixels(ili, sma)
-xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, -5.56566902681778, cal_do, method='lm')
+xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
 zi = zc
 t2 = time()
 
 t3 = time()
 xii = np.copy(xi)
 
+uplim = np.median(xi - xc) + 10 #110
+ifil = np.where( ((xi - xc) > uplim) * (ili<650) )[0]
+fil1 = np.zeros_like(xii, dtype=bool)
+if len(ifil)>0:
+    fil1[:ifil[-1]+1] = True
+    xii[fil1] = np.nan
+
 fil2 = np.nanstd(xii) > 22
+print(np.nanstd(xii))
 if fil2:
     xii[:] = np.nan
 else:
@@ -411,90 +619,435 @@ else:
     xii[fil3] = np.nan
 t4 = time()
 
-print(t2-t1, t4-t3)
+# print(ifil[-1], fil2)
+# print(t2-t1, t4-t3, t1-t0)
+print( xii )
 
-plt.plot(zc, yc, '.-')
+
+plt.figure()
+plt.imshow(imo[:,:,::-1], cmap='gray')
+# plt.imshow(im, cmap='gray')
+plt.plot(smi, ili,'b-',alpha=0.5)
+plt.plot(sma, ili,'r-',alpha=0.5)
+plt.plot(fma, ili,'y--',alpha=0.5)
+plt.show()
+
+
+
+
+#%%
+i = 10000 #430
+l = 0
+# uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+# imo = np.array( uvids[l].read()[1] )[:,:,::-1]
+dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+imo = np.array( dvids[l].read()[1] )[:,:,::-1]
+t1 = time()
+# im = grayscale_im(imo[:,1400:2600])
+im = grayscale_im(imo[:2090,1100:2400])
+
+ny,nx = np.shape(im)
+g2 = gaussian(im, 10)
+dg = normalize( np.gradient(g2,axis=1) )
+mdg = np.median(dg)
+
+ili = np.arange(ny)
+
+ima, imi = np.full(len(dg), np.nan, dtype=int), np.full(len(dg), np.nan, dtype=int)
+for j in range(len(dg)):
+    arr1 = find_peaks( dg[j,:], height= mdg+0.1, prominence=0.1)[0]
+    arr2 = find_peaks(-dg[j,:], height=-mdg+0.1, prominence=0.1)[0]    
+    ima[j] = np.concatenate( (arr1[:1],[np.argmax(dg[j,:])]) )[0]
+    imi[j] = np.concatenate( (arr2[:1],[np.argmin(dg[j,:])]) )[0]
+smi, sma = subpixel(normalize(dg), imi, ili), subpixel(normalize(dg), ima, ili)
+
+plt.figure()
+plt.imshow(dg)
+# plt.imshow(im)
+plt.plot(sma, ili, '--')
+plt.plot(smi, ili, '-')
+plt.show()
+
+#%%
+
+
+#%%
+#%%
+# =============================================================================
+# Back iamge
+# =============================================================================
+
+def pick_points_on_figure(im, fig_num, max_picks=1):    
+    picked_points_x, picked_points_y = [],[]
+
+    fig, ax = plt.subplots()
+    ax.set_title(f"Figure {fig_num}: Pick {max_picks} points")
+    ax.imshow(im, cmap='gray')
+
+    def on_pick(event):
+
+        picked_x = event.xdata
+        picked_y = event.ydata
+        
+        picked_points_x.append(picked_x)
+        picked_points_y.append(picked_y)
+
+        # if (picked_x, picked_y) not in picked_points:
+        idx = len(picked_points_x)
+        ax.plot(picked_x, picked_y, 'ro')
+
+        fig.canvas.draw_idle()
+        fig.canvas.flush_events()
+
+        if idx >= max_picks:
+            fig.canvas.mpl_disconnect(cid)
+            plt.pause(1)
+            plt.close(fig)
+
+
+    cid = fig.canvas.mpl_connect('button_press_event', on_pick)
+
+    while plt.fignum_exists(fig.number):
+        plt.pause(0.1)  # pause briefly to process events            
+
+    # cx,cy = picked_points_x[0],picked_points_y[0]
+    # r1 = np.sqrt( (cx-picked_points_x[1])**2 + (cy-picked_points_y[1])**2 )
+    # r2 = np.sqrt( (cx-picked_points_x[2])**2 + (cy-picked_points_y[2])**2 )
+    return picked_points_x, picked_points_y 
+
+def circle_fit(points, vals):
+    cx,cy,r = vals[0],vals[1],vals[2]
+    distc = (points[:,0] - cx)**2 + (points[:,1] - cy)**2
+    distr = distc - r**2
+    return distr
+
+def circle_filter(points, im):
+    fun = lambda vals: circle_fit(points, vals)
+    ll = least_squares(fun, [500,500,500])
+    
+    yind,xind = np.indices(np.shape(im))
+    rind = np.sqrt( (xind-ll.x[0])**2 + (yind-ll.x[1])**2 ) #
+    # oind = np.arctan2( yind-ll.x[1], xind-ll.x[0] )
+    fil = (rind>ll.x[2]-25)*(rind<ll.x[2]+25)
+
+    return fil, ll.x
+
+def angle_dot(im, fil, fit_val, threshold=0.3, sizes=[700,3000] ):
+
+    cx,cy,r = fit_val
+    imt = np.copy(im)
+    imt[fil] = 0
+    
+    la = label(imt>threshold)
+
+    # props = regionprops_table( la, properties=('area', 'centroid') )
+    # size = props['area']
+    # cent = np.column_stack( (props['centroid-0'], props['centroid-1']) )
+    # find = (size>sizes[0])&(size<sizes[1])
+    # dotc = np.concatenate( (cent[find].flatten() , [np.nan,np.nan]) )[:2]
+    # ang = np.arctan2( dotc[0]-cy, dotc[1]-cx  )
+    
+    dotc = np.array([np.nan, np.nan])
+    for prop in regionprops(la):
+        if sizes[0] < prop.area < sizes[1]:
+            dotc = np.array(prop.centroid)
+            break
+
+    ang = np.arctan2( -(dotc[0]-cy), dotc[1]-cx  )
+
+    return ang
+
+def circmedian(angs):
+    pdists = angs[np.newaxis, :] - angs[:, np.newaxis]
+    pdists = (pdists + np.pi) % (2 * np.pi) - np.pi
+    pdists = np.abs(pdists).sum(1)
+    return angs[np.argmin(pdists)]
+
+# def get_median_angles(angles,stops,restarts,l):
+#     angmed = []
+#     for i in range(len(stops[l])):
+#         if i == 0: 
+#             angmed.append( circmedian( angles[ : stops[l][0] ] ) )
+#         elif i == len(stops[l])-1: 
+#             angmed.append( circmedian( angles[ restarts[l][-2] : ] ) )
+#         else: 
+#             angmed.append( circmedian( angles[ restarts[l][i-1] : stops[l][i]  ] ) )
+#     return np.array(angmed)
+    
+def get_median_angles(angles,stops,restarts):
+    angmed = []
+    for i in range(len(stops)+1):
+        if i == 0: 
+            angmed.append( circmedian( angles[ : stops[0] ] ) )
+        elif i == len(stops): 
+            angmed.append( circmedian( angles[ restarts[-1] : ] ) )
+        else: 
+            angmed.append( circmedian( angles[ restarts[i-1] : stops[i]  ] ) )
+    return np.array(angmed)
+    
+
+#%%
+
+# at 25 fps
+
+path = '/Volumes/Ice blocks/Scan water channel/25-09-29/'
+
+bvids = [cv2.VideoCapture( path + 'Camera back/DSC_0449.MOV'), #starts at 3502
+         cv2.VideoCapture( path + 'Camera back/DSC_0450.MOV')] #end at 27627
+
+blens = [0]+[int(bvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(bvids))]
+#%%
+l=1
+# for i in range(27625,27630,1):
+for i in [1000,6000,14000,22000]:
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+    im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
+    
+    plt.figure()
+    plt.imshow(im)
+    plt.title(i)
+    plt.show()    
+#%%
+l = 0
+
+pos = []
+for i in [7000,13000,19000,22000,28000,37000,40000]:
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+    im = np.array(bvids[l].read()[1])[:1900,1050:2900,::-1]
+    im = normalize( gaussian( im[:,:,2], 5) )
+
+    pos.append(pick_points_on_figure(im, i))
+    
+pos = (np.array(pos))[:,:,0]
+fil, fit_val = circle_filter(pos, im)
+
+fit_val
+#%%
+
+starts = np.array([3502, 0])
+ends = np.array([blens[1]-1, 27627])
+stops = [[7533,14308,21987,30126,37849,np.inf],[1895,8760,17771,np.inf]]
+restarts = [[7895,14505,22228,30356,38075,np.inf],[2097,8895,17921,np.inf]]
+
+cuts = np.cumsum(ends-starts)
+bvideo = np.searchsorted(cuts, np.arange(cuts[-1]), side='right')
+
+nfil = ~fil
+
+t1 = time()
+
+tot_angles = []
+
+for l in range(len(bvids)):
+    start,end = starts[l], ends[l]
+    N_total = end-start
+    angles = np.zeros(N_total)
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, start )
+    for i in tqdm(range(N_total)):
+        counter = np.searchsorted(restarts[l], i)
+        
+        if stops[l][counter] < i+start < restarts[l][counter]:
+            bvids[l].read()
+            angles[i] = np.nan
+    
+        else:        
+            im = np.array(bvids[l].read()[1])[:1900,1050:2900,::-1]
+            im = im[:,:,2]    
+            angles[i] = angle_dot(im, nfil, fit_val, threshold=0.3*255, sizes=[800,3000])
+    tot_angles.append( angles )
+
+tot_angles = np.hstack(tot_angles)
+cuts = np.cumsum(ends-starts)
+bvideo = np.searchsorted(cuts, np.arange(68576), side='right')
+
+t2 = time()
+print(t2-t1)
+
+np.save(path+'/angles(not_added).npy', tot_angles)
+
+#%%
+# from scipy.stats import circmean
+l = 0
+rotated = True
+
+tot_angles = np.load(path+'/angles(not_added).npy')
+tot_stops, tot_rest = np.array( stops[0][:-1] ), np.array( restarts[0][:-1] )
+for l in range(1,len(bvids)):
+    tot_stops = np.concatenate( (tot_stops,stops[l][:-1] + cuts[l-1]) )
+    tot_rest = np.concatenate( (tot_rest,restarts[l][:-1] + cuts[l-1]) )
+tot_stops, tot_rest = tot_stops - starts[np.searchsorted(cuts, tot_stops)], tot_rest - starts[np.searchsorted(cuts, tot_rest)] 
+
+
+angt = tot_angles - 1*(np.sign(tot_angles)-1)*np.pi
+angmed = get_median_angles(angt, tot_stops, tot_rest)
+
+tot_nrots = [0,4,3,4,4,4,5,3,2]
+ext_rot = np.diff(angmed) - (np.sign(np.diff(angmed))-1)*np.pi
+rotation = np.cumsum(tot_nrots)*2*np.pi + np.cumsum( np.hstack((0,ext_rot)) )
+
+frm = [0]
+if rotated:
+    ags = [rotation[0]]
+    for i in range(len(rotation)-1):
+        frm.append( tot_stops[i] )
+        frm.append( tot_rest[i] )
+        ags.append( rotation[i] )
+        ags.append( rotation[i+1] )
+    ags.append( rotation[-1] )
+elif not rotated:
+    ags = [angmed[0]]
+    for i in range(len(rotation)-1):
+        frm.append( tot_stops[i] )
+        frm.append( tot_rest[i] )
+        ags.append( angmed[i] )
+        ags.append( angmed[i+1] )
+    ags.append( angmed[-1] )
+frm.append( len(tot_angles) )
+
+
+frm, ags = np.array(frm), np.array(ags)
+
+plt.figure()
+
+plt.plot( angt, '.')
+plt.plot( frm, ags, '.-' )
+# plt.hlines( angmed , 0, 70000, linestyles='dashed', colors=['r','b','g','m','y'])
+
+plt.grid()
+plt.show()    
+
+#%%
+time = frm/25
+time[11:] += 3
+
+bposition = ags * 2.5 / (2*np.pi)
+
+plt.figure()
+plt.plot(time/60, bposition, '.-')
+plt.grid()
+plt.show()
+
+bdat = [time, bposition]
+np.savez(path+'back_plate_position.npz', *bdat)
+
+#%%
+
+bplate = np.load(path+'back_plate_position.npz')
+
+time = bplate['arr_0']
+bpos = bplate['arr_1']
+
+plt.figure()
+plt.plot(time/60, bpos, '.-')
+plt.grid()
+plt.show()
+
+
+
+#%%
+
+
+import datetime
+
+timeList = ['0:00:00', '0:29:38', '15:39:05']
+mysum = datetime.timedelta()
+for i in timeList:
+    (h, m, s) = i.split(':')
+    d = datetime.timedelta(hours=int(h), minutes=int(m), seconds=int(s))
+    mysum += d
+print(str(mysum))
+
+
+
+#%%
+
+
+
+
+#%%
+starts = [3502, 0]
+ends = [blens[1], 27627]
+
+stops = [[7533,14308,21987,30126,37849,np.inf],[1895,8760,17771,np.inf]]
+restarts = [[7895,14505,22228,30356,38075,np.inf],[2097,8895,17921,np.inf]]
+
+nfil = ~fil
+
+
+l = 1
+
+
+N_total = 27627
+angles = np.zeros(N_total)
+
+t1 = time()
+start = 0
+bvids[l].set(cv2.CAP_PROP_POS_FRAMES, start )
+for i in tqdm(range(N_total)):
+    counter = np.searchsorted(restarts[l], i)
+    
+    if stops[l][counter] < i < restarts[l][counter]:
+        bvids[l].read()
+        angles[i] = np.nan
+
+    else:        
+        im = np.array(bvids[l].read()[1])[:1900,1050:2900,::-1]
+        im = im[:,:,2]    
+        angles[i] = angle_dot(im, nfil, fit_val, threshold=0.3*255, sizes=[900,3000])
+
+t2 = time()
+t2-t1
+
+
+#%%
+l = 1
+start = 0
+i = -start+ 27550
+bvids[l].set(cv2.CAP_PROP_POS_FRAMES, start+i )
+
+im = np.array(bvids[l].read()[1])[:1900,1050:2900,::-1]
+im = im[:,:,2]
+
+ang1 = angle_dot(im, nfil, fit_val, threshold=0.3*255, sizes=[800,3000])
+
+sizes = [800,3000]
+threshold=0.3*255
+cx,cy,r = fit_val
+imt = np.copy(im)
+imt[nfil] = 0
+
+la = label(imt>threshold)
+
+print( np.array( [int(prop.area) for prop in regionprops(la)] ) )
+
+dotc = np.array([np.nan, np.nan])
+for prop in regionprops(la):
+    if sizes[0] < prop.area < sizes[1]:
+        dotc = np.array(prop.centroid)
+        break
+
+ang = np.arctan2( -(dotc[0]-cy), dotc[1]-cx  )
+
+print(ang *180/np.pi, ang1*180/np.pi, angles[i]*180/np.pi)
 
 
 # plt.figure()
-# plt.imshow(imo, cmap='gray')
-# plt.plot(smi, ili,'b-',alpha=0.5)
-# # plt.plot(sma, ili,'r-',alpha=0.5)
-# plt.plot(fma, ili,'y--',alpha=0.5)
+# plt.imshow( la )
+# plt.plot( dotc[1], dotc[0], 'r.' )
 # plt.show()
 
-# plt.figure()
-# plt.plot(xii, yi,'.-', markersize=10)
-# plt.plot(xi, yi,'.', markersize=3)
-# # plt.axis('equal')
-# plt.show()
-
-
-# from scipy.stats import kurtosis
-
-
-# for i in 3200 + np.arange(15,45,1):
-for i in 3200 + np.array([-39,-4]):
-    imo = np.array( uvid4.get_data(i) )
-    t1 = time()
-    im = grayscale_im(imo[:,1250:2330])
-    ili, smi, sma = laser_edges(im, sigma=10)
-    smi,sma = smi+1250, sma+1250
-    fma = fit_wall_pixels(ili, sma)
-    xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, -5.56566902681778, cal_up, method='lm')
-    zi = zc
-    t2 = time()
-    
-    
-    t3 = time()
-    xii = np.copy(xi)
-    xii[:130] = np.nan
-    
-    uplim = np.median(xi - xc) + 10 #110
-    ifil = np.where( ((xi - xc) > uplim) * (ili<600) )[0]
-    fil1 = np.zeros_like(xii, dtype=bool)
-    if len(ifil)>0:
-        fil1[:ifil[-1]+1] = True
-        xii[fil1] = np.nan
-    
-    fil2 = np.nanstd(xii) > 22
-    if fil2:
-        xii[:] = np.nan
-    else:
-        fil3 = np.abs(xii - np.nanmedian(xii)) > 25 #np.nanstd(xii) * 3.
-        xii[fil3] = np.nan
-    t4 = time()
-    
-    plt.plot(zc, yc, '.--', label=i-3200)
-# plt.plot(zi, yi, '.--')
-
-# print(t2-t1, t4-t3)
-    
-    # plt.figure()
-    # plt.imshow(imo) #, cmap='gray')
-    # plt.plot(smi, ili,'b-',alpha=0.5)
-    # plt.plot(sma, ili,'r-',alpha=0.5)
-    # plt.plot(fma, ili,'y--',alpha=0.5)
-    # plt.show()
-
-# plt.figure()
-# plt.plot(xii, yi,'.-', markersize=10)
-# plt.plot(xi, yi,'.', markersize=3)
-# # plt.plot(xc, yc,'.', markersize=3)
-# plt.show()
-
-plt.legend()
+plt.figure()
+plt.imshow( normalize(imt) )
+plt.plot( dotc[1], dotc[0], 'r.' )
+plt.show()
+plt.figure()
+plt.imshow( normalize(im) )
 plt.show()
 
 
 #%%
 
 
-a = np.array([1,2,3,3])
-b = np.array([1,2])
-
-# a[:b[-1:]+1]
-np.size(b[-1:]+1)
 
 #%%
 
@@ -502,12 +1055,6 @@ np.size(b[-1:]+1)
 
 
 
-
-
-
-
-
-#%%
 
 
 
