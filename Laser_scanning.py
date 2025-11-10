@@ -236,10 +236,10 @@ def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1
     """
     start,end = lims[0], lims[1]
     lens = lens[1:]
-    frames_led = np.where(np.diff((f_mes>threshold)*1.)>0.5)[0]+1
-    
+    frames_led = np.where( np.diff((f_mes>threshold)*1.)>0.5 )[0] + 1
+        
     cuts = np.cumsum(lens)
-    gaps = np.where(np.abs(np.diff(frames_led) - minute_interval) > 2)[0] #cut in video between this blink and next blink
+    gaps = np.where(np.abs(np.diff(frames_led) - minute_interval) > 10)[0] #cut in video between this blink and next blink
         
     missing_frames = minute_interval - np.diff(frames_led)[gaps]
     missing_pos = np.searchsorted(cuts, frames_led[gaps])
@@ -263,8 +263,11 @@ def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1
     all_frames = np.copy(tall_frames)
     for i in range(len(missing_frames)): all_frames[tall_frames>tcuts[missing_pos[i]]] += -missing_frames[i]
     
-    fil = (all_frames>=start) * (all_frames<=end+np.sum(missing_frames))
+    fil = (all_frames>=start) * (all_frames<=end) #+np.sum(missing_frames))
     all_frames = all_frames[fil]
+    
+    filt = (tall_frames>=start) * (tall_frames<=end+np.sum(missing_frames))
+    tall_frames = tall_frames[ filt ]
     
     if np.isnan( np.sum(tvid[tall_frames]) ) or np.isnan( np.sum(tvid[tall_frames+n_recons]) ):
         print('One or more profiles cannot be fully reconstructed')
@@ -282,7 +285,7 @@ def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1
 #%%
 # 30 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/25-09-29/'
+path = '/Volumes/Ice blocks/Scan water channel/25-10-24/'
 
 data = np.load(path+'calibration_data.npz')
 angle_xy, angle_yz, angle_xz = float(data['arr_3']), float(data['arr_4']), float(data['arr_5'])
@@ -292,17 +295,16 @@ cal_do = data['arr_1']
 wall_distance = float(data['arr_2'])
 
 
-dvids = [cv2.VideoCapture( path + 'Camera down/DSC_6033.MOV'), # starts 3317
-         cv2.VideoCapture( path + 'Camera down/DSC_6034.MOV'), # 
-         cv2.VideoCapture( path + 'Camera down/DSC_6035.MOV'), #
-         cv2.VideoCapture( path + 'Camera down/DSC_6036.MOV'), #
-         cv2.VideoCapture( path + 'Camera down/DSC_6037.MOV') # ends in last frame
+dvids = [cv2.VideoCapture( path + 'Camera down/DSC_0478.MOV'), # starts 619
+         cv2.VideoCapture( path + 'Camera down/DSC_0479.MOV'),
+         cv2.VideoCapture( path + 'Camera down/DSC_0480.MOV'),
+         cv2.VideoCapture( path + 'Camera down/DSC_0481.MOV')  # ends 18620
          ]
 
-uvids = [cv2.VideoCapture( path + 'Camera up/DSC_9559.MOV'), # starts 3381
-         cv2.VideoCapture( path + 'Camera up/DSC_9560.MOV'), #
-         cv2.VideoCapture( path + 'Camera up/DSC_9561.MOV'), #
-         cv2.VideoCapture( path + 'Camera up/DSC_9562.MOV') # ends in last frame
+uvids = [cv2.VideoCapture( path + 'Camera up/DSC_9569.MOV'), # starts 502
+         cv2.VideoCapture( path + 'Camera up/DSC_9570.MOV'), #
+         cv2.VideoCapture( path + 'Camera up/DSC_9571.MOV'), #
+         cv2.VideoCapture( path + 'Camera up/DSC_9572.MOV')  # ends 17900
          ]
 
 dlens = [0]+[int(dvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(dvids))]
@@ -312,18 +314,23 @@ ulens = [0]+[int(uvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(uvid
 #%%
 l = 0
 
-for i in range(3315,3318,2):
+for i in range(1875,1885,1):
+# for i in range(337,341,1):
     dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
-    im = np.array( dvids[l].read()[1] )[:,:,::-1]
+    # im = np.array( dvids[l].read()[1] )[:,:,::-1]
+    im = np.array( dvids[l].read()[1] )[210:290,2060:2180,::-1]
     im = grayscale_im(im)
     plt.figure()
     plt.imshow(im, cmap='gray') 
     plt.title(i)
     plt.show()
+    print(i, np.mean(im), np.median(im))
 
-# for i in range(3380,3386,2):
+# # for i in range(20240,20250,3):
+# for i in range(1760,1770,3):
 #     uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-#     im = np.array( uvids[l].read()[1] )[:,:,::-1]
+#     # im = np.array( uvids[l].read()[1] )[:,:,::-1]
+#     im = np.array( uvids[l].read()[1] ) [2050:2150,2800:2940,::-1] 
 #     # im = grayscale_im(im)
 #     plt.figure()
 #     plt.imshow(im, cmap='gray') 
@@ -334,21 +341,21 @@ for i in range(3315,3318,2):
 
 #%%
 # Led finding
-d_led = [122,158,2656,2692] 
-u_led = [1895,1933,2891,2926] 
+d_led = [210,290,2060,2180] 
+u_led = [2050,2150,2800,2940] 
 
 u_mes, d_mes = [],[]
 
 for l in range(len(dvids)):
     dvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for j in tqdm(range(dlens[l])):
+    for j in tqdm(range(dlens[l+1])):
         im = np.array( dvids[l].read()[1] )[d_led[0]:d_led[1],d_led[2]:d_led[3]] 
         im = grayscale_im(im)
         d_mes.append(np.mean(im))
 
 for l in range(len(uvids)):
     uvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for j in tqdm(range(ulens[l])):
+    for j in tqdm(range(ulens[l+1])):
         im = np.array( uvids[l].read()[1] )[u_led[0]:u_led[1],u_led[2]:u_led[3]] 
         im = grayscale_im(im)
         u_mes.append(np.mean(im))
@@ -360,18 +367,21 @@ np.savez(path+'led_blink.npz', u_mes=u_mes, d_mes=d_mes)
 blink = np.load(path+'led_blink.npz')
 u_mes,d_mes = blink['u_mes'], blink['d_mes']
 
+threshold = [7.8]
 plt.figure()
-plt.plot( u_mes, '.-')
+plt.plot( u_mes , '.-')
 plt.plot( d_mes, '.-')
+plt.hlines( threshold, 0, np.max([len(d_mes),len(u_mes)]), color='g' )
+plt.grid()
 plt.show()
 
 #%%
 
 N = 60
-shift = 64
+shift = 0
 end = np.min([np.sum(ulens),np.sum(dlens)])
-d_frame, d_vid, d_leds = frame_position(d_mes, dlens, [3317,end], n_recons=N)
-u_frame, u_vid, u_leds = frame_position(u_mes, ulens, [3381,end], n_recons=N)
+d_frame, d_vid, d_leds = frame_position(d_mes, dlens, [619,end], n_recons=N, threshold=13.5)
+u_frame, u_vid, u_leds = frame_position(u_mes, ulens, [502,end], n_recons=N, threshold=7.8)
 d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
 
 d_frame, u_frame = d_frame+shift, u_frame+shift
@@ -721,37 +731,50 @@ def circle_fit(points, vals):
     distr = distc - r**2
     return distr
 
-def circle_filter(points, im):
+def circle_filter(points, im, rad_width=35):
     fun = lambda vals: circle_fit(points, vals)
     ll = least_squares(fun, [500,500,500])
     
     yind,xind = np.indices(np.shape(im))
     rind = np.sqrt( (xind-ll.x[0])**2 + (yind-ll.x[1])**2 ) #
     # oind = np.arctan2( yind-ll.x[1], xind-ll.x[0] )
-    fil = (rind>ll.x[2]-25)*(rind<ll.x[2]+25)
+    fil = (rind>ll.x[2]-rad_width)*(rind<ll.x[2]+rad_width)
 
     return fil, ll.x
 
-def angle_dot(im, fil, fit_val, threshold=0.3, sizes=[700,3000] ):
+def angle_dot(im, fil, fit_val, angs_arr, ang_ini, c_ini , threshold=0.3, sizes=[700,3000], ang_tol=12, ecc_thres=0.65): #min_dist=10000 ):
 
     cx,cy,r = fit_val
     imt = np.copy(im)
     imt[fil] = 0
+            
+    angs_rotated = (angs_arr - ang_ini + 1*np.pi) % (2 * np.pi) - np.pi
+    fila = ( angs_rotated < np.pi/ang_tol) * ( angs_rotated > -np.pi/ang_tol)
+    imt[~fila] = 0
     
     la = label(imt>threshold)
+    dict_prop = regionprops_table(la, properties=['area','centroid','eccentricity']) #to make it with idst t previous
+    area_fil = (sizes[0]<dict_prop['area'])&(dict_prop['area']<sizes[1])
+    ecc_fil = dict_prop['eccentricity'] < ecc_thres
+    dist = (dict_prop['centroid-0']-c_ini[0])**2 + (dict_prop['centroid-1']-c_ini[1])**2  
 
-    # props = regionprops_table( la, properties=('area', 'centroid') )
-    # size = props['area']
-    # cent = np.column_stack( (props['centroid-0'], props['centroid-1']) )
-    # find = (size>sizes[0])&(size<sizes[1])
-    # dotc = np.concatenate( (cent[find].flatten() , [np.nan,np.nan]) )[:2]
-    # ang = np.arctan2( dotc[0]-cy, dotc[1]-cx  )
+    dotc = np.array([np.nan, np.nan])    
     
-    dotc = np.array([np.nan, np.nan])
-    for prop in regionprops(la):
-        if sizes[0] < prop.area < sizes[1]:
-            dotc = np.array(prop.centroid)
-            break
+    dot = np.argmin( (1-area_fil*1)*50 + (1-ecc_fil*1)*50 + dist.argsort().argsort() )
+    dotc[0] = dict_prop['centroid-0'][ dot ]
+    dotc[1] = dict_prop['centroid-1'][ dot ]
+
+    # dist_fil = dist < min_dist
+    # fil_tot = area_fil&dist_fil
+    # if np.sum(fil_tot) > 0:
+    #     dotc[0] = dict_prop['centroid-0'][ fil_tot ][0]
+    #     dotc[1] = dict_prop['centroid-1'][ fil_tot ][0]
+    
+    # dotc = np.array([np.nan, np.nan])
+    # for prop in regionprops(la):
+    #     if sizes[0] < prop.area < sizes[1]:
+    #         dotc = np.array(prop.centroid)
+    #         break
 
     ang = np.arctan2( -(dotc[0]-cy), dotc[1]-cx  )
 
@@ -790,30 +813,43 @@ def get_median_angles(angles,stops,restarts):
 
 # at 25 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/25-09-29/'
+path = '/Volumes/Ice blocks/Scan water channel/25-10-24/'
 
-bvids = [cv2.VideoCapture( path + 'Camera back/DSC_0449.MOV'), #starts at 3502
-         cv2.VideoCapture( path + 'Camera back/DSC_0450.MOV')] #end at 27627
+bvids = [cv2.VideoCapture( path + 'Camera back/DSC_6506.MOV'), #starts at 1034
+         cv2.VideoCapture( path + 'Camera back/DSC_6507.MOV'),
+         cv2.VideoCapture( path + 'Camera back/DSC_6508.MOV'),
+         cv2.VideoCapture( path + 'Camera back/DSC_6509.MOV'), #end at last frame
+         ]
 
 blens = [0]+[int(bvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(bvids))]
 #%%
-l=1
-# for i in range(27625,27630,1):
-for i in [1000,6000,14000,22000]:
+l=0
+# for i in range(1000,1100,3000):
+for i in [1195]:
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-    im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
+    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
+    im = np.array(bvids[l].read()[1]) [150:2100,750:2800,::-1]
     
     plt.figure()
     plt.imshow(im)
     plt.title(i)
     plt.show()    
+    
+# 0: 3000, 15000
+# 1: 12000, 15000
+# 2: 12000, 18000
+# 3: 0, 3000
+
 #%%
-l = 0
+# l = 0
+blims = [150,2100,750,2800]
 
 pos = []
-for i in [7000,13000,19000,22000,28000,37000,40000]:
+
+# for i in [7000,13000,19000,22000,28000,37000,40000]:
+for i,l in zip([3000,15000,12000,15000,12000,18000,0,3000],[0,0,1,1,2,2,3,3]):
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-    im = np.array(bvids[l].read()[1])[:1900,1050:2900,::-1]
+    im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
     im = normalize( gaussian( im[:,:,2], 5) )
 
     pos.append(pick_points_on_figure(im, i))
@@ -824,46 +860,304 @@ fil, fit_val = circle_filter(pos, im)
 fit_val
 #%%
 
-starts = np.array([3502, 0])
-ends = np.array([blens[1]-1, 27627])
-stops = [[7533,14308,21987,30126,37849,np.inf],[1895,8760,17771,np.inf]]
-restarts = [[7895,14505,22228,30356,38075,np.inf],[2097,8895,17921,np.inf]]
+# starts = np.array([3502, 0])
+# ends = np.array([blens[1]-1, 27627])
+# stops = [[7533,14308,21987,30126,37849,np.inf],[1895,8760,17771,np.inf]]
+# restarts = [[7895,14505,22228,30356,38075,np.inf],[2097,8895,17921,np.inf]]
 
-cuts = np.cumsum(ends-starts)
-bvideo = np.searchsorted(cuts, np.arange(cuts[-1]), side='right')
+# cuts = np.cumsum(ends-starts)
+# bvideo = np.searchsorted(cuts, np.arange(cuts[-1]), side='right')
+
+start = 1034
+end = np.sum(blens)
+# end = 17000
 
 nfil = ~fil
 
 t1 = time()
 
+bvids[0].set(cv2.CAP_PROP_POS_FRAMES, 0)
+im = np.array(bvids[0].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
+im = im[:,:,2]    
+
+cx,cy,r = fit_val
+ny,nx = np.shape(im)
+xxx,yyy = np.meshgrid( np.arange(nx), np.arange(ny) ) 
+angs = np.arctan2( -(yyy-cy), xxx-cx )
+
+angl = angle_dot(im, ~fil, fit_val, angs, 0, [0,0] , threshold=180, sizes=[800,2000], ang_tol=1/2, ecc_thres=0.65 )
+cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl)
+
+print(angl, cxa,cya)
+
 tot_angles = []
 
+finish, counter = False, 0
 for l in range(len(bvids)):
-    start,end = starts[l], ends[l]
-    N_total = end-start
-    angles = np.zeros(N_total)
-    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, start )
-    for i in tqdm(range(N_total)):
-        counter = np.searchsorted(restarts[l], i)
-        
-        if stops[l][counter] < i+start < restarts[l][counter]:
-            bvids[l].read()
-            angles[i] = np.nan
+    # start,end = starts[l], ends[l]
     
-        else:        
-            im = np.array(bvids[l].read()[1])[:1900,1050:2900,::-1]
-            im = im[:,:,2]    
-            angles[i] = angle_dot(im, nfil, fit_val, threshold=0.3*255, sizes=[800,3000])
+    # N_total = end-start
+    angles = np.zeros(blens[l+1])
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0 )
+
+    for i in tqdm(range(blens[l+1])):
+        # counter = np.searchsorted(restarts[l], i)
+        counter += 1
+        if counter == end: 
+            finish=True
+            break
+        
+        im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
+        im = im[:,:,2]    
+        if 16167 <= counter-1 <= 16171: angl = angle_dot(im, nfil, fit_val, angs, angl, [cya,cxa] , threshold=180, sizes=[800,2000], ang_tol=8, ecc_thres=0.6 )
+        else: angl = angle_dot(im, nfil, fit_val, angs, angl, [cya,cxa] , threshold=180, sizes=[800,2000], ang_tol=8, ecc_thres=0.72 )
+        angles[i] = angl
+        cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl)
+
     tot_angles.append( angles )
+    
+    if finish: break
+    
 
 tot_angles = np.hstack(tot_angles)
-cuts = np.cumsum(ends-starts)
-bvideo = np.searchsorted(cuts, np.arange(68576), side='right')
+# cuts = np.cumsum(ends-starts)
+# bvideo = np.searchsorted(cuts, np.arange(68576), side='right')
 
 t2 = time()
 print(t2-t1)
 
 np.save(path+'/angles(not_added).npy', tot_angles)
+
+#%%
+
+tot_angles = np.load(path+'/angles(not_added).npy')
+
+plt.figure()
+# plt.plot(tot_angles[:],'.-')
+plt.plot( np.unwrap(tot_angles[:]),'.-')
+plt.grid()
+plt.show()
+
+
+#%%
+# Find led
+
+l=0
+for i in range(1195,1196,5):
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
+    im = np.array(bvids[l].read()[1])[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
+    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
+    
+    # print(np.mean(im))
+    
+    plt.figure()
+    plt.imshow(im[:,:,:])
+    # plt.title('R, {}, {:.2f}'.format(i,np.mean(im[:,:,0])))
+    plt.title('{}, {:.2f}'.format(i,np.mean(im[:,:,0])))
+    plt.show()    
+    # plt.figure()
+    # plt.imshow(im[:,:,1])
+    # plt.title('G, {}, {:.2f}'.format(i,np.mean(im[:,:,1])))
+    # plt.show()    
+    # plt.figure()
+    # plt.imshow(im[:,:,2])
+    # plt.title('B, {}, {:.2f}'.format(i,np.mean(im[:,:,2])))
+    # plt.show()    
+
+#%%
+
+b_led = [1540,1595,880,930] 
+
+b_mes = []
+
+for l in range(len(bvids)):
+# for l in [1]:
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for j in tqdm(range(blens[l+1])):
+    # for j in []:
+        im = np.array( bvids[l].read()[1] )[b_led[0]:b_led[1],b_led[2]:b_led[3],1] 
+        # im = grayscale_im(im)
+        b_mes.append(np.mean(im))
+
+b_mes = np.array(b_mes)
+
+#%%
+b_mes[:1500] = 0
+
+start = 1034
+dt = 60/1503
+coso = np.where( np.diff((b_mes>15)*1.)>.5 )[0]
+temp = (np.arange(0,len(b_mes)) - start) * dt
+
+intervals = np.abs(np.diff(coso) - 1503)
+jumps = np.where( intervals>3 )[0]
+jumpb = [2]
+for l in range(len(jumpb)):
+    temp[ np.cumsum(blens)[jumpb[l]]: ] += intervals[jumps]*dt
+
+
+plt.figure()
+plt.plot(temp, b_mes>15, '.-')
+plt.plot( temp[coso], b_mes[coso]>15, 'r.' )
+plt.vlines(temp[np.cumsum(blens) - 1], 0, 1, color='gray')
+
+# plt.plot( b_mes>15)
+# plt.plot( coso, b_mes[coso]>15, 'r.' )
+# plt.vlines(np.cumsum(blens), 0, 1, color='gray')
+
+plt.show()
+
+# np.save(path+'/back_times.npy', temp)
+#%%
+
+start = 1034
+tot_angles = np.load(path+'/angles(not_added).npy')
+times = np.load(path+'/back_times.npy')
+
+backpos = np.unwrap(tot_angles - tot_angles[start+100]) * 2.5/(2*np.pi)
+
+plt.figure()
+plt.plot( times, backpos, '.-' )
+# plt.vlines(np.cumsum(blens), 0, 2500, color='gray')
+plt.xlabel('Time (s)')
+plt.ylabel('Back position (mm)')
+plt.grid()
+plt.show()
+
+
+np.savez(path+'back_position.npz', time=times, position=backpos)
+
+
+
+#%%
+
+
+#%%
+l = 0
+i0 = 16160 #- np.cumsum(blens)[l]
+bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i0)
+im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
+im = im[:,:,2]    
+
+cx,cy,r = fit_val
+ny,nx = np.shape(im)
+xxx,yyy = np.meshgrid( np.arange(nx), np.arange(ny) ) 
+angs = np.arctan2( -(yyy-cy), xxx-cx )
+
+angl = angle_dot(im, ~fil, fit_val, angs, 2.913, [786,190],  threshold=170, sizes=[800,2000], ang_tol=1/2 )
+cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl) 
+print(angl)
+
+
+# plt.figure()
+# plt.imshow( im )
+# # plt.plot( dotc[1], dotc[0], 'r.' )
+# plt.title(i)
+# plt.show()
+
+# print(angl)
+
+ang_tol1 = 8
+ang_tol2 = 8
+
+cccc = [angl]
+for i in range(16161,16260):
+# for i in tqdm(range(0,100), disable=True ):
+
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)    
+    im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
+    im = im[:,:,2]    
+    # angl = angle_dot(im, ~fil, fit_val, angs, angl, [cya,cxa],  threshold=170, sizes=[800,2000], ang_tol=12, min_dist=10000 )
+    
+    ang_ini = angl
+    threshold= 180 
+    sizes=[800,2000]
+    ecc_thres = 0.72 #1
+    min_dist = 20000
+            
+    # if 16167<=i<=16171: ecc_thres = 0.6 
+    if 16169<=i<=16169: ecc_thres = 0.6 
+    
+    cx,cy,r = fit_val
+    imt = np.copy(im)
+    imt[~fil] = 0
+    angs_rotated = (angs - ang_ini + 1*np.pi) % (2 * np.pi) - np.pi
+    fila = ( angs_rotated < np.pi/ang_tol1) * ( angs_rotated > -np.pi/ang_tol2)
+    imt[~fila] = 0
+    la = label(imt>threshold)    
+    dotc = np.array([np.nan, np.nan])
+
+    
+    dict_prop = regionprops_table(la, properties=['area','centroid','eccentricity'])
+    area_fil = (sizes[0]<dict_prop['area'])&(dict_prop['area']<sizes[1])
+    ecc_fil = dict_prop['eccentricity'] < ecc_thres
+    dist = (dict_prop['centroid-0']-cya)**2 + (dict_prop['centroid-1']-cxa)**2  
+    
+    wight = (1-area_fil*1)*50 + (1-ecc_fil*1)*50 + dist.argsort().argsort()
+    
+    dot = np.argmin( wight  )
+    
+    # if i==40: dot=5
+    
+    # if i>=7: print(i, np.max(la), dot, dict_prop['eccentricity'] )
+    # if i>=7: print(i, np.max(la), dot, wight )
+    
+    dotc[0] = dict_prop['centroid-0'][ dot ]
+    dotc[1] = dict_prop['centroid-1'][ dot ]
+
+    angl = np.arctan2( -(dotc[0]-cy), dotc[1]-cx  )
+    cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl) 
+    cccc.append(angl)
+        
+    # print(angl, end=' ')
+    
+    # print(angl, ang_ini)
+    
+    # if i%5 == 0 :
+    # # if i >= 7:
+    #     plt.figure()
+    #     # plt.imshow( la )
+    #     plt.imshow( im )
+    #     # plt.plot( dotc[1], dotc[0], 'r.' )
+    #     plt.plot( cxa, cya, 'r.' )
+    #     plt.title(i)
+    #     plt.show()
+
+#%%
+
+
+plt.figure()
+plt.plot( np.unwrap(cccc),'.-')
+plt.plot( np.unwrap(tot_angles[16160:16260][1:]) ,'.-')
+plt.show()
+
+
+#%%
+8570
+bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)    
+im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
+im = im[:,:,2]    
+
+imt = np.copy(im)
+imt[~fil] = 0
+
+ny,nx = np.shape(imt)
+xxx,yyy = np.meshgrid( np.arange(nx), np.arange(ny) ) 
+angs = np.arctan2( -(yyy-cy), xxx-cx )
+angs_rotated = (angs - angl + 1*np.pi) % (2 * np.pi) - np.pi
+
+fila = ( angs_rotated < +np.pi/10) * ( angs_rotated > -np.pi/10)
+
+
+plt.figure()
+plt.imshow(  imt * fila )
+# plt.imshow( (imt*fila) > threshold )
+# plt.imshow(angs)
+plt.plot( dotc[1], dotc[0], 'r.' )
+plt.show()
+
+
 
 #%%
 # from scipy.stats import circmean
