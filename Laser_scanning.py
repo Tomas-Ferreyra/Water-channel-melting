@@ -113,6 +113,7 @@ def laser_edges(im, sigma=20):
     # ima = np.argmax(dg, axis=1  ) 
     # ima = np.array( [ (find_peaks( dg[i,:], height= mdg+0.1, prominence=0.1)[0])[0] for i in range(len(dg)) ] )
     # imi = np.array( [ (find_peaks(-dg[i,:], height=-mdg+0.1, prominence=0.1)[0])[0] for i in range(len(dg)) ] )
+
     ima, imi = np.full(len(dg), np.nan, dtype=int), np.full(len(dg), np.nan, dtype=int)
     for j in range(len(dg)):
         arr1 = find_peaks( dg[j,:], height= mdg+0.1, prominence=0.1)[0]
@@ -314,28 +315,31 @@ ulens = [0]+[int(uvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(uvid
 #%%
 l = 0
 
-for i in range(1875,1885,1):
-# for i in range(337,341,1):
-    dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
-    # im = np.array( dvids[l].read()[1] )[:,:,::-1]
-    im = np.array( dvids[l].read()[1] )[210:290,2060:2180,::-1]
-    im = grayscale_im(im)
-    plt.figure()
-    plt.imshow(im, cmap='gray') 
-    plt.title(i)
-    plt.show()
-    print(i, np.mean(im), np.median(im))
-
-# # for i in range(20240,20250,3):
-# for i in range(1760,1770,3):
-#     uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-#     # im = np.array( uvids[l].read()[1] )[:,:,::-1]
-#     im = np.array( uvids[l].read()[1] ) [2050:2150,2800:2940,::-1] 
-#     # im = grayscale_im(im)
+# for i in range(2000,2002,1):
+# # for i in range(337,341,1):
+#     dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
+#     # im = np.array( dvids[l].read()[1] )[:,:,::-1]
+#     # im = np.array( dvids[l].read()[1] )[210:290,2060:2180,::-1]
+#     im = np.array( dvids[l].read()[1] )[:,800:1850,::-1]
+#     im = grayscale_im(im)
 #     plt.figure()
 #     plt.imshow(im, cmap='gray') 
 #     plt.title(i)
 #     plt.show()
+#     print(i, np.mean(im), np.median(im))
+
+# for i in range(20240,20250,3):
+for i in range(2000,2010,1):
+    uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+    # im = np.array( uvids[l].read()[1] )[:,:,::-1]
+    # im = np.array( uvids[l].read()[1] ) [2050:2150,2800:2940,::-1] 
+    im = np.array( uvids[l].read()[1] ) [60:,1600:2600,::-1] 
+    # im = grayscale_im(im)
+
+    plt.figure()
+    plt.imshow(im, cmap='gray') 
+    plt.title(i)
+    plt.show()
 
 
 
@@ -379,7 +383,8 @@ plt.show()
 
 N = 60
 shift = 0
-end = np.min([np.sum(ulens),np.sum(dlens)])
+end = 83000 #np.min([np.sum(ulens),np.sum(dlens)])
+
 d_frame, d_vid, d_leds = frame_position(d_mes, dlens, [619,end], n_recons=N, threshold=13.5)
 u_frame, u_vid, u_leds = frame_position(u_mes, ulens, [502,end], n_recons=N, threshold=7.8)
 d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
@@ -430,11 +435,11 @@ for i in tqdm(range(len(d_frame))):
 
     for j in range(N):
         
-        im = np.array( vid.read()[1] )[:,1100:2400]
+        im = np.array( vid.read()[1] )[:,850:1850]
         im = grayscale_im(im)
-        im[2090:] = 0
-        ili, smi, sma = laser_edges(im, sigma=10)
-        smi, sma = smi+1100, sma+1100 
+        # im[2090:] = 0
+        ili, smi, sma = laser_edges(im, sigma=20)
+        smi, sma = smi+850, sma+850 
         fma = fit_wall_pixels(ili, sma)
     
         # xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
@@ -461,10 +466,10 @@ for i in tqdm(range(len(d_frame))):
 
     for j in range(N):
         
-        im = np.array( vid.read()[1] )[:,1400:2600]
+        im = np.array( vid.read()[1] )[:,1600:2600]
         im = grayscale_im(im)
-        ili, smi, sma = laser_edges(im, sigma=10)
-        smi, sma = smi+1400, sma+1400 
+        ili, smi, sma = laser_edges(im, sigma=20)
+        smi, sma = smi+1600, sma+1600 
         fma = fit_wall_pixels(ili, sma)
 
         # xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
@@ -475,14 +480,14 @@ for i in tqdm(range(len(d_frame))):
         # uxi[:130] = np.nan
         
         uplim = np.median(xi - xc) + 10 #110
-        ifil = np.where( ((xi - xc) > uplim) * (ili<650) )[0]
+        ifil = np.where( (np.abs(xi - xc) > uplim) * (ili<720) )[0]
         fil1 = np.zeros_like(xi, dtype=bool)
         if len(ifil)>0:
             fil1[:ifil[-1]+1] = True        
             uxi[fil1], uyi[fil1], uzi[fil1] = np.nan, np.nan, np.nan
         
         # fil2_u = np.ones_like(xi, dtype=bool) * np.nanstd(uxi) > 22
-        fil2_u = np.nanstd(uxi) > 23
+        fil2_u = np.nanstd(uxi) > 22
         if fil2_u:
             uxi, uyi, uzi = np.nan, np.nan, np.nan    
         else:
@@ -532,8 +537,8 @@ ice_z = np.load(path+'ice_z_0.npy')
 # plt.grid()
 # plt.show()
 
-i = 60
-plt.figure( figsize=(5,10))
+i = 80
+plt.figure( )# figsize=(5,10))
 ss=  plt.scatter( ice_z[i], ice_y[i], c=ice_x[i], s=1 )
 plt.axis('equal')
 cbar = plt.colorbar(ss, location='top')
@@ -541,24 +546,25 @@ cbar = plt.colorbar(ss, location='top')
 plt.xlabel(r'$x$ (mm)')
 plt.ylabel(r'$y$ (mm)')
 plt.title(r'$h$ (mm)',fontsize=12, pad=50)
-plt.savefig('./Documents/prof4.png',dpi=200, bbox_inches='tight')
+# plt.savefig('./Documents/prof4.png',dpi=200, bbox_inches='tight')
 plt.show()
 
 
 #%%
 
-# i = 15000 #430
+# i = 1764 + 45
 # l = 0
 
 # t0=time()
 # dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
 # imo = np.array( dvids[l].read()[1] )[:,:,::-1]
+
 # t1 = time()
 # # im = grayscale_im(imo[:2090,1100:2400])
-# im = grayscale_im(imo[:,1100:2400])
-# im[2090:] = 0
-# ili, smi, sma = laser_edges(im, sigma=10)
-# smi,sma = smi+1100, sma+1100
+# im = grayscale_im(imo[:,850:1850])
+# # im[2090:] = 0
+# ili, smi, sma = laser_edges(im, sigma=20)
+# smi,sma = smi+850, sma+850
 # fma = fit_wall_pixels(ili, sma)
 # xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
 # zi = zc
@@ -576,35 +582,36 @@ plt.show()
 # t4 = time()
 
 # print(t2-t1, t4-t3, t1-t0)
-
+# print(np.sum(np.isnan(xii)), xii)
 
 # plt.figure()
-# # plt.imshow(imo, cmap='gray')
-# plt.imshow(im, cmap='gray')
+# plt.imshow(imo, cmap='gray')
+# # plt.imshow(im, cmap='gray')
 # plt.plot(smi, ili,'b-',alpha=0.5)
-# # plt.plot(sma, ili,'r-',alpha=0.5)
+# plt.plot(sma, ili,'r-',alpha=0.5)
 # plt.plot(fma, ili,'y--',alpha=0.5)
 # plt.show()
 
-i = 0 #430
-algo = 10
-# l = 3
+
+i = 18200
+algo = 0
+l = 3
 
 t0 = time()
-# uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-# imo = np.array( uvids[l].read()[1] )[:,:,::-1]
+uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i+algo)
+imo = np.array( uvids[l].read()[1] )[:,:,::-1]
 
-vid = uvids[u_vid[i]]
-ini = u_frame[i] - u_cuts[u_vid[i]]
-vid.set(cv2.CAP_PROP_POS_FRAMES, ini + algo)
-imo = np.array( vid.read()[1] )
+# vid = uvids[u_vid[i]]
+# ini = u_frame[i] - u_cuts[u_vid[i]]
+# vid.set(cv2.CAP_PROP_POS_FRAMES, ini + algo)
+# imo = np.array( vid.read()[1] )
 # im = grayscale_im(im)
 
 t1 = time()
 
-im = grayscale_im(imo[:,1400:2600])
-ili, smi, sma = laser_edges(im, sigma=10)
-smi,sma = smi+1400, sma+1400
+im = grayscale_im(imo[:,1600:2600])
+ili, smi, sma = laser_edges(im, sigma=20)
+# smi,sma = smi+1600, sma+1600
 fma = fit_wall_pixels(ili, sma)
 xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
 zi = zc
@@ -614,7 +621,7 @@ t3 = time()
 xii = np.copy(xi)
 
 uplim = np.median(xi - xc) + 10 #110
-ifil = np.where( ((xi - xc) > uplim) * (ili<650) )[0]
+ifil = np.where( (np.abs(xi - xc) > uplim) * (ili<720) )[0]
 fil1 = np.zeros_like(xii, dtype=bool)
 if len(ifil)>0:
     fil1[:ifil[-1]+1] = True
@@ -630,19 +637,24 @@ else:
 t4 = time()
 
 # print(ifil[-1], fil2)
-# print(t2-t1, t4-t3, t1-t0)
-print( xii )
+print(t2-t1, t4-t3, t1-t0)
+# print( xii )
 
 
 plt.figure()
-plt.imshow(imo[:,:,::-1], cmap='gray')
-# plt.imshow(im, cmap='gray')
+# plt.imshow(imo, cmap='gray')
+plt.imshow(im, cmap='gray')
 plt.plot(smi, ili,'b-',alpha=0.5)
 plt.plot(sma, ili,'r-',alpha=0.5)
 plt.plot(fma, ili,'y--',alpha=0.5)
+plt.plot(smi[np.isnan(xii)], ili[np.isnan(xii)],'m-',alpha=0.5)
 plt.show()
 
-
+# gg= normalize( np.gradient(gaussian(im,20),axis=1) )
+# plt.figure()
+# # plt.imshow( gg )
+# plt.plot( gg[550,:] )
+# plt.show()
 
 
 #%%
@@ -822,7 +834,84 @@ bvids = [cv2.VideoCapture( path + 'Camera back/DSC_6506.MOV'), #starts at 1034
          ]
 
 blens = [0]+[int(bvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(bvids))]
+
 #%%
+# Find led to get times
+
+l=0
+for i in range(1195,1196,5):
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
+    im = np.array(bvids[l].read()[1])[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
+    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
+    
+    # print(np.mean(im))
+    
+    plt.figure()
+    plt.imshow(im[:,:,:])
+    # plt.title('R, {}, {:.2f}'.format(i,np.mean(im[:,:,0])))
+    plt.title('{}, {:.2f}'.format(i,np.mean(im[:,:,0])))
+    plt.show()    
+    # plt.figure()
+    # plt.imshow(im[:,:,1])
+    # plt.title('G, {}, {:.2f}'.format(i,np.mean(im[:,:,1])))
+    # plt.show()    
+    # plt.figure()
+    # plt.imshow(im[:,:,2])
+    # plt.title('B, {}, {:.2f}'.format(i,np.mean(im[:,:,2])))
+    # plt.show()    
+
+#%%
+
+b_led = [1540,1595,880,930] 
+
+b_mes = []
+
+for l in range(len(bvids)):
+# for l in [1]:
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for j in tqdm(range(blens[l+1])):
+    # for j in []:
+        im = np.array( bvids[l].read()[1] )[b_led[0]:b_led[1],b_led[2]:b_led[3],1] 
+        # im = grayscale_im(im)
+        b_mes.append(np.mean(im))
+
+b_mes = np.array(b_mes)
+
+#%%
+b_mes[:1500] = 0
+
+start = 1034
+interval_blink = 1503
+thres_blink = 15
+
+dt = 60/interval_blink
+coso = np.where( np.diff((b_mes>thres_blink)*1.)>.5 )[0]
+temp = (np.arange(0,len(b_mes)) - start) * dt
+
+intervals = np.abs(np.diff(coso) - interval_blink)
+jumps = np.where( intervals>3 )[0]
+jumpb = [2]
+for l in range(len(jumpb)):
+    temp[ np.cumsum(blens)[jumpb[l]]: ] += intervals[jumps]*dt
+
+
+plt.figure()
+plt.plot(temp, b_mes>thres_blink, '.-')
+plt.plot( temp[coso], b_mes[coso]>thres_blink, 'r.' )
+plt.vlines(temp[np.cumsum(blens) - 1], 0, 1, color='gray')
+
+# plt.plot( b_mes>thres_blink)
+# plt.plot( coso, b_mes[coso]>thres_blink, 'r.' )
+# plt.vlines(np.cumsum(blens), 0, 1, color='gray')
+
+plt.show()
+
+# np.save(path+'/back_times.npy', temp)
+
+#%%
+# Finding angle of handle
+
 l=0
 # for i in range(1000,1100,3000):
 for i in [1195]:
@@ -928,110 +1017,6 @@ print(t2-t1)
 
 np.save(path+'/angles(not_added).npy', tot_angles)
 
-#%%
-
-tot_angles = np.load(path+'/angles(not_added).npy')
-
-plt.figure()
-# plt.plot(tot_angles[:],'.-')
-plt.plot( np.unwrap(tot_angles[:]),'.-')
-plt.grid()
-plt.show()
-
-
-#%%
-# Find led
-
-l=0
-for i in range(1195,1196,5):
-    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
-    im = np.array(bvids[l].read()[1])[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
-    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
-    
-    # print(np.mean(im))
-    
-    plt.figure()
-    plt.imshow(im[:,:,:])
-    # plt.title('R, {}, {:.2f}'.format(i,np.mean(im[:,:,0])))
-    plt.title('{}, {:.2f}'.format(i,np.mean(im[:,:,0])))
-    plt.show()    
-    # plt.figure()
-    # plt.imshow(im[:,:,1])
-    # plt.title('G, {}, {:.2f}'.format(i,np.mean(im[:,:,1])))
-    # plt.show()    
-    # plt.figure()
-    # plt.imshow(im[:,:,2])
-    # plt.title('B, {}, {:.2f}'.format(i,np.mean(im[:,:,2])))
-    # plt.show()    
-
-#%%
-
-b_led = [1540,1595,880,930] 
-
-b_mes = []
-
-for l in range(len(bvids)):
-# for l in [1]:
-    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for j in tqdm(range(blens[l+1])):
-    # for j in []:
-        im = np.array( bvids[l].read()[1] )[b_led[0]:b_led[1],b_led[2]:b_led[3],1] 
-        # im = grayscale_im(im)
-        b_mes.append(np.mean(im))
-
-b_mes = np.array(b_mes)
-
-#%%
-b_mes[:1500] = 0
-
-start = 1034
-dt = 60/1503
-coso = np.where( np.diff((b_mes>15)*1.)>.5 )[0]
-temp = (np.arange(0,len(b_mes)) - start) * dt
-
-intervals = np.abs(np.diff(coso) - 1503)
-jumps = np.where( intervals>3 )[0]
-jumpb = [2]
-for l in range(len(jumpb)):
-    temp[ np.cumsum(blens)[jumpb[l]]: ] += intervals[jumps]*dt
-
-
-plt.figure()
-plt.plot(temp, b_mes>15, '.-')
-plt.plot( temp[coso], b_mes[coso]>15, 'r.' )
-plt.vlines(temp[np.cumsum(blens) - 1], 0, 1, color='gray')
-
-# plt.plot( b_mes>15)
-# plt.plot( coso, b_mes[coso]>15, 'r.' )
-# plt.vlines(np.cumsum(blens), 0, 1, color='gray')
-
-plt.show()
-
-# np.save(path+'/back_times.npy', temp)
-#%%
-
-start = 1034
-tot_angles = np.load(path+'/angles(not_added).npy')
-times = np.load(path+'/back_times.npy')
-
-backpos = np.unwrap(tot_angles - tot_angles[start+100]) * 2.5/(2*np.pi)
-
-plt.figure()
-plt.plot( times, backpos, '.-' )
-# plt.vlines(np.cumsum(blens), 0, 2500, color='gray')
-plt.xlabel('Time (s)')
-plt.ylabel('Back position (mm)')
-plt.grid()
-plt.show()
-
-
-np.savez(path+'back_position.npz', time=times, position=backpos)
-
-
-
-#%%
-
 
 #%%
 l = 0
@@ -1134,606 +1119,34 @@ plt.show()
 
 
 #%%
-8570
-bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)    
-im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
-im = im[:,:,2]    
-
-imt = np.copy(im)
-imt[~fil] = 0
-
-ny,nx = np.shape(imt)
-xxx,yyy = np.meshgrid( np.arange(nx), np.arange(ny) ) 
-angs = np.arctan2( -(yyy-cy), xxx-cx )
-angs_rotated = (angs - angl + 1*np.pi) % (2 * np.pi) - np.pi
-
-fila = ( angs_rotated < +np.pi/10) * ( angs_rotated > -np.pi/10)
-
-
-plt.figure()
-plt.imshow(  imt * fila )
-# plt.imshow( (imt*fila) > threshold )
-# plt.imshow(angs)
-plt.plot( dotc[1], dotc[0], 'r.' )
-plt.show()
-
-
-
-#%%
-# from scipy.stats import circmean
-l = 0
-rotated = True
+# All together
 
 tot_angles = np.load(path+'/angles(not_added).npy')
-tot_stops, tot_rest = np.array( stops[0][:-1] ), np.array( restarts[0][:-1] )
-for l in range(1,len(bvids)):
-    tot_stops = np.concatenate( (tot_stops,stops[l][:-1] + cuts[l-1]) )
-    tot_rest = np.concatenate( (tot_rest,restarts[l][:-1] + cuts[l-1]) )
-tot_stops, tot_rest = tot_stops - starts[np.searchsorted(cuts, tot_stops)], tot_rest - starts[np.searchsorted(cuts, tot_rest)] 
-
-
-angt = tot_angles - 1*(np.sign(tot_angles)-1)*np.pi
-angmed = get_median_angles(angt, tot_stops, tot_rest)
-
-tot_nrots = [0,4,3,4,4,4,5,3,2]
-ext_rot = np.diff(angmed) - (np.sign(np.diff(angmed))-1)*np.pi
-rotation = np.cumsum(tot_nrots)*2*np.pi + np.cumsum( np.hstack((0,ext_rot)) )
-
-frm = [0]
-if rotated:
-    ags = [rotation[0]]
-    for i in range(len(rotation)-1):
-        frm.append( tot_stops[i] )
-        frm.append( tot_rest[i] )
-        ags.append( rotation[i] )
-        ags.append( rotation[i+1] )
-    ags.append( rotation[-1] )
-elif not rotated:
-    ags = [angmed[0]]
-    for i in range(len(rotation)-1):
-        frm.append( tot_stops[i] )
-        frm.append( tot_rest[i] )
-        ags.append( angmed[i] )
-        ags.append( angmed[i+1] )
-    ags.append( angmed[-1] )
-frm.append( len(tot_angles) )
-
-
-frm, ags = np.array(frm), np.array(ags)
 
 plt.figure()
-
-plt.plot( angt, '.')
-plt.plot( frm, ags, '.-' )
-# plt.hlines( angmed , 0, 70000, linestyles='dashed', colors=['r','b','g','m','y'])
-
-plt.grid()
-plt.show()    
-
-#%%
-time = frm/25
-time[11:] += 3
-
-bposition = ags * 2.5 / (2*np.pi)
-
-plt.figure()
-plt.plot(time/60, bposition, '.-')
-plt.grid()
-plt.show()
-
-bdat = [time, bposition]
-np.savez(path+'back_plate_position.npz', *bdat)
-
-#%%
-
-bplate = np.load(path+'back_plate_position.npz')
-
-time = bplate['arr_0']
-bpos = bplate['arr_1']
-
-plt.figure()
-plt.plot(time/60, bpos, '.-')
+# plt.plot(tot_angles[:],'.-')
+plt.plot( np.unwrap(tot_angles[:]),'.-')
 plt.grid()
 plt.show()
 
 
 
-#%%
+start = 1034
+tot_angles = np.load(path+'/angles(not_added).npy')
+times = np.load(path+'/back_times.npy')
 
-
-import datetime
-
-timeList = ['0:00:00', '0:29:38', '15:39:05']
-mysum = datetime.timedelta()
-for i in timeList:
-    (h, m, s) = i.split(':')
-    d = datetime.timedelta(hours=int(h), minutes=int(m), seconds=int(s))
-    mysum += d
-print(str(mysum))
-
-
-
-#%%
-
-
-
-
-#%%
-starts = [3502, 0]
-ends = [blens[1], 27627]
-
-stops = [[7533,14308,21987,30126,37849,np.inf],[1895,8760,17771,np.inf]]
-restarts = [[7895,14505,22228,30356,38075,np.inf],[2097,8895,17921,np.inf]]
-
-nfil = ~fil
-
-
-l = 1
-
-
-N_total = 27627
-angles = np.zeros(N_total)
-
-t1 = time()
-start = 0
-bvids[l].set(cv2.CAP_PROP_POS_FRAMES, start )
-for i in tqdm(range(N_total)):
-    counter = np.searchsorted(restarts[l], i)
-    
-    if stops[l][counter] < i < restarts[l][counter]:
-        bvids[l].read()
-        angles[i] = np.nan
-
-    else:        
-        im = np.array(bvids[l].read()[1])[:1900,1050:2900,::-1]
-        im = im[:,:,2]    
-        angles[i] = angle_dot(im, nfil, fit_val, threshold=0.3*255, sizes=[900,3000])
-
-t2 = time()
-t2-t1
-
-
-#%%
-l = 1
-start = 0
-i = -start+ 27550
-bvids[l].set(cv2.CAP_PROP_POS_FRAMES, start+i )
-
-im = np.array(bvids[l].read()[1])[:1900,1050:2900,::-1]
-im = im[:,:,2]
-
-ang1 = angle_dot(im, nfil, fit_val, threshold=0.3*255, sizes=[800,3000])
-
-sizes = [800,3000]
-threshold=0.3*255
-cx,cy,r = fit_val
-imt = np.copy(im)
-imt[nfil] = 0
-
-la = label(imt>threshold)
-
-print( np.array( [int(prop.area) for prop in regionprops(la)] ) )
-
-dotc = np.array([np.nan, np.nan])
-for prop in regionprops(la):
-    if sizes[0] < prop.area < sizes[1]:
-        dotc = np.array(prop.centroid)
-        break
-
-ang = np.arctan2( -(dotc[0]-cy), dotc[1]-cx  )
-
-print(ang *180/np.pi, ang1*180/np.pi, angles[i]*180/np.pi)
-
-
-# plt.figure()
-# plt.imshow( la )
-# plt.plot( dotc[1], dotc[0], 'r.' )
-# plt.show()
+backpos = np.unwrap(tot_angles - tot_angles[start+100]) * 2.5/(2*np.pi)
 
 plt.figure()
-plt.imshow( normalize(imt) )
-plt.plot( dotc[1], dotc[0], 'r.' )
-plt.show()
-plt.figure()
-plt.imshow( normalize(im) )
-plt.show()
-
-
-#%%
-
-
-
-#%%
-
-
-
-
-
-
-
-
-#%%
-# =============================================================================
-# Back iamge
-# =============================================================================
-# at 25 fps
-
-path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
-bvid1 = imageio.get_reader( path + 'Camera back/DSC_0436.MOV', 'ffmpeg') # 7272 frames, starts 3487 (for seeing 4480), 15:31:06
-bvid2 = imageio.get_reader( path + 'Camera back/DSC_0437.MOV', 'ffmpeg') # 6624 frames                               , 15:35:56
-bvid3 = imageio.get_reader( path + 'Camera back/DSC_0438.MOV', 'ffmpeg') # 6684 frames                               , 15:40:21
-bvid4 = imageio.get_reader( path + 'Camera back/DSC_0439.MOV', 'ffmpeg') # 6876 frames                               , 15:44:49
-bvid5 = imageio.get_reader( path + 'Camera back/DSC_0440.MOV', 'ffmpeg') # 6852 frames                               , 15:49:24
-bvid6 = imageio.get_reader( path + 'Camera back/DSC_0441.MOV', 'ffmpeg') # 6648 frames                               , 15:53:58
-bvid7 = imageio.get_reader( path + 'Camera back/DSC_0442.MOV', 'ffmpeg') # 4020 frames                               , 15:58:24
-bvid8 = imageio.get_reader( path + 'Camera back/DSC_0443.MOV', 'ffmpeg') # 6924 frames, ends 5658 (for seeing 5424)  , 16:01:57
-
-
-# print(bvid1.count_frames(), bvid2.count_frames(), bvid3.count_frames(), bvid4.count_frames()) 
-# print(bvid5.count_frames(), bvid6.count_frames(), bvid7.count_frames(), bvid8.count_frames()) 
-
-times = ['15:31:06', '15:35:56', '15:40:21', '15:44:49', '15:49:24', '15:53:58', '15:58:24', '16:01:57']    
-# pol = np.array([7270,6622,6682,6874,6850,6646,4018,6922])
-b_frames = initial_frames(times, fps=25)
-b_frames
-#%%
-
-for i in range(5656,5659,1):
-    im = np.array( bvid8.get_data(i) )
-    # im = grayscale_im(im)
-    plt.figure()
-    plt.imshow(im)
-    plt.title(i)
-    plt.show()
-
-#%%
-
-def nan_argmax(peks, pprop):
-    try:
-        return peks[np.argmax(pprop['prominences'])]
-    except ValueError:
-        return np.nan
-
-
-pes, aas, ies = [],[],[]
-
-for i in tqdm(range(4480, 7271, 10)):
-    im = np.array( bvid1.get_data(i) )
-    im = grayscale_im(im)
-    img = gaussian(im,15)
-    aa = np.mean( img[1100:1300,700:3500],axis=0 )
-    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
-    pep = nan_argmax(peks, pprop)
-
-    pes.append(pep)
-    aas.append(aa)
-    ies.append(i+b_frames[0])
-
-for i in tqdm(range(0, 6623, 10)):
-    im = np.array( bvid2.get_data(i) )
-    im = grayscale_im(im)
-    img = gaussian(im,15)
-    aa = np.mean( img[1100:1300,700:3500],axis=0 )
-    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
-    pep = nan_argmax(peks, pprop)
-
-    pes.append(pep)
-    aas.append(aa)
-    ies.append(i+b_frames[1])
-    
-for i in tqdm(range(0, 6683, 10)):
-    im = np.array( bvid3.get_data(i) )
-    im = grayscale_im(im)
-    img = gaussian(im,15)
-    aa = np.mean( img[1100:1300,700:3500],axis=0 )
-    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
-    pep = nan_argmax(peks, pprop)
-
-    pes.append(pep)
-    aas.append(aa)
-    ies.append(i+b_frames[2])
-    
-for i in tqdm(range(0, 6875, 10)):
-    im = np.array( bvid4.get_data(i) )
-    im = grayscale_im(im)
-    img = gaussian(im,15)
-    aa = np.mean( img[1100:1300,700:3500],axis=0 )
-    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
-    pep = nan_argmax(peks, pprop)
-
-    pes.append(pep)
-    aas.append(aa)
-    ies.append(i+b_frames[3])
-    
-for i in tqdm(range(0, 6851, 10)):
-    im = np.array( bvid5.get_data(i) )
-    im = grayscale_im(im)
-    img = gaussian(im,15)
-    aa = np.mean( img[1100:1300,700:3500],axis=0 )
-    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
-    pep = nan_argmax(peks, pprop)
-
-    pes.append(pep)
-    aas.append(aa)
-    ies.append(i+b_frames[4])
-    
-for i in tqdm(range(0, 6647, 10)):
-    im = np.array( bvid6.get_data(i) )
-    im = grayscale_im(im)
-    img = gaussian(im,15)
-    aa = np.mean( img[1100:1300,700:3500],axis=0 )
-    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
-    pep = nan_argmax(peks, pprop)
-
-    pes.append(pep)
-    aas.append(aa)
-    ies.append(i+b_frames[5])
-    
-for i in tqdm(range(0, 4019, 10)):
-    im = np.array( bvid7.get_data(i) )
-    im = grayscale_im(im)
-    img = gaussian(im,15)
-    aa = np.mean( img[1100:1300,700:3500],axis=0 )
-    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
-    pep = nan_argmax(peks, pprop)
-
-    pes.append(pep)
-    aas.append(aa)
-    ies.append(i+b_frames[6])
-    
-for i in tqdm(range(0, 5423, 10)):
-    im = np.array( bvid8.get_data(i) )
-    im = grayscale_im(im)
-    img = gaussian(im,15)
-    aa = np.mean( img[1100:1300,700:3500],axis=0 )
-    peks,pprop = find_peaks(-aa, prominence=30, wlen=120)
-    pep = nan_argmax(peks, pprop)
-
-    pes.append(pep)
-    aas.append(aa)
-    ies.append(i+b_frames[7])
-    
-pes = np.array(pes)
-ies = np.array(ies)
-#%%
-
-start = 3158 + 2
-interval = 30
-
-d_times = ['16:32:30','16:41:30','16:51:14','17:00:04','17:02:56']    
-d_len_vid = [16155, 17490, 15900, 4374, 6259]
-d_frame, d_vid, d_fpos = frames_reconstruction(start, interval, d_times, d_len_vid)
-
-u_times = ['17:32:00','17:43:12','17:54:14','18:02:30']    
-u_len_vid = [20100, 19860, 13959, 6140]
-u_frame, u_vid, u_fpos = frames_reconstruction(start+40, interval, u_times, u_len_vid)
-
-
-u_frame, u_vid, u_len_vid
-
-#%%
-
-cosos = [2308,
-         2168,
-         2171,
-         1880,
-         1880,
-         1880,
-         1880,
-         1679,
-         1679,
-         1679,
-         1679,
-         1529,
-         1529,
-         1529,
-         1529,
-         1529,
-         1529,
-         1422,
-         1422,
-         1422,
-         1240,
-         1240,
-         1240,
-         1065,
-         1065,
-         1065,
-         1065,
-         1065,
-         784,
-         784,
-         784,
-         784,
-         784,
-         784,
-         784,
-         784,
-         665,
-         665,
-         665,
-         665,
-         665,
-         665,
-         594,
-         484,
-         484,
-         484,
-         484,
-         484,
-         484,
-         369,
-         369,
-         369,
-         369,
-         369,
-         172,
-         172,
-         172,
-         172,
-         172,
-         172,
-         128,
-         128,
-         128,
-         128,
-         128]
-
-plt.figure()
-# for i in range(10):
-#     plt.plot(aas[i],'-',zorder=-1)
-#     plt.plot(pes[i],aas[i][pes[i]],'k.',zorder=0)
-
-plt.plot((ies-4480)/25, pes,'.-')
-# plt.plot( (d_fpos-start)/30, [100]*len(d_fpos), '.' )
-# plt.plot( (u_fpos-start-40)/30, [100]*len(u_fpos), '.' )
-plt.plot( (u_fpos-start-40)/30, cosos, '.' )
-
-plt.show()
-
-#%%
-
-# cal frame
-path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
-bcal = imageio.get_reader( path + 'Camera back/DSC_0435.MOV', 'ffmpeg') # 7272 frames, starts 3487 (for seeing 4480), 15:31:06
-
-im = np.array( bcal.get_data(225) )
-im = grayscale_im(im[700:1300,700:3500])
-# im = grayscale_im(im)
-
-plt.figure()
-plt.imshow(im, cmap='gray')
-plt.show()
-
-#%%
-from scipy.stats import linregress
-
-posit = [[150,3350],
-         [140,3165],
-         [130,2984],
-         [120,2805],
-         [110,2628],
-         [100,2454],
-         [ 90,2282],
-         [ 80,2112],
-         [ 70,1943],
-         [ 60,1778],
-         [ 50,1616],
-         [ 40,1455],
-         [ 30,1296],
-         [ 20,1138],
-         [ 10,986]]
-posit = np.array(posit)
-posit[:,1] = posit[:,1]-700 
-
-a = linregress(posit[:,1], posit[:,0])
-b = np.polyfit(posit[:,1], posit[:,0], 2)
-ee = np.linspace(100,2800,20)  
-
-plt.figure()
-# plt.imshow(im, cmap='gray')
-# plt.plot( posit[:,1], [250]*15, '.' )
-
-plt.plot( posit[:,1], posit[:,0], '.' )
-plt.plot( ee, ee*a.slope+a.intercept,'--' )
-plt.plot( ee, ee**2 * b[0]+ee*b[1]+b[2],'--' )
-
-plt.show()
-#%%
-
-cosos = np.array(cosos)
-disp = cosos**2 *b[0] + cosos * b[1] + b[2]
-disp = disp[0] - disp
-
-print(disp)
-
-np.save(path+'back_dispalcement.npy',disp)
-#%%
-# =============================================================================
-# aaaa
-# =============================================================================
-path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
-ice_x = np.load(path+'ice_x.npy')
-ice_y = np.load(path+'ice_y.npy')
-ice_z = np.load(path+'ice_z.npy')
-
-#%%
-i = 19
-plt.figure()
-plt.scatter(ice_z[i], ice_y[i], c=ice_x[i], s=1, cmap='jet')
-plt.axis('equal')
-plt.show()
-
-#%%
-
-mes, sd = [],[]
-for i in range(len(ice_x)):
-    mes.append( np.nanmean(ice_x[i]) )
-    sd.append( np.nanstd(ice_x[i]) )
-#%%
-fil = np.isnan(mes)
-ss = linregress( np.arange(65)[~fil], (mes + disp)[~fil] )
-dd = np.arange(65)
-
-plt.figure()
-plt.plot( mes, '.-' )
-plt.plot( mes + disp, '.-' )
-plt.plot( dd, dd*ss.slope+ss.intercept,'--' )
-# plt.plot( sd, '.-')
+plt.plot( times, backpos, '.-' )
+# plt.vlines(np.cumsum(blens), 0, 2500, color='gray')
+plt.xlabel('Time (s)')
+plt.ylabel('Back position (mm)')
 plt.grid()
 plt.show()
 
 
-
-
-#%%
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#%%
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#%%
-
-
-
-
-
-
-
-
-
+np.savez(path+'back_position.npz', time=times, position=backpos)
 
 
 
