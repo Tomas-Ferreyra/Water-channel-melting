@@ -205,7 +205,7 @@ def frames_reconstruction(start, interval, times, len_vid):
         # print( ifram[ev[prob1]] - pos[prob1] )
         return pos - ifram[iv], iv, pos
 
-def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1798, n_recons=60):
+def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1798, n_recons=60, missing_cycles=0):
     """
     Returns the frames where to start the recontruction of each profile
 
@@ -242,7 +242,9 @@ def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1
     cuts = np.cumsum(lens)
     gaps = np.where(np.abs(np.diff(frames_led) - minute_interval) > 10)[0] #cut in video between this blink and next blink
         
-    missing_frames = minute_interval - np.diff(frames_led)[gaps]
+    missing_frames = minute_interval * (missing_cycles+1) - np.diff(frames_led)[gaps]
+
+
     missing_pos = np.searchsorted(cuts, frames_led[gaps])
     
     tcuts = np.copy(cuts)
@@ -278,15 +280,237 @@ def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1
         plt.plot( np.arange(len(tvid)), tvid,'.-' )
         plt.legend()
         plt.show()
-    else: print('No issues')        
+    else: print('No issues')    
+
+    ttime = tall_frames / minute_interval * 60 # time in secs 
         
-    return all_frames, tvid[all_frames].astype(int), frames_led
+    return all_frames, tvid[all_frames].astype(int), frames_led, ttime
+
+
+
+
+def count_missing_frames_with_video_lengths( brightness, video_lengths, lims, fps=30, threshold=None, divisor=None, missing_cycles=None,
+                                            blink_period_sec=60.0, min_on_frames=1, tolerance = 5):
+    """
+    Estimate missing frames between videos using LED blink timing.
+
+    Parameters
+    ----------
+    brightness : array-like
+        Mean brightness per frame (concatenated videos).
+    video_lengths : list[int]
+        Length (in frames) of each video, in order.
+    lims : [int,int] 
+        First and last recorded frames to consider (exclusive).
+    fps : float
+        Frames per second.
+    threshold : float or None
+        Brightness threshold for LED ON detection.
+    divisors : int or None
+       Divisors of the blink interval (e.g. [2, 3] → half, third).
+    missing_cycles: list or None
+        List should have the same number of elements as cut (or len(video_lenghts)-2 ). Each element is the amount of cycles skipped in each cut.
+    blink_period_sec : float
+        LED blink period in seconds.
+    min_on_frames : int
+        Minimum consecutive ON frames to count as a blink.
+     tolerance : inte
+            Allowed deviation from expected blink period (in frames).
+    Returns
+    -------
+    total_missing_frames : int
+        Total missing frames across all cuts.
+    missing_per_cut : list[int]
+        Missing frames between each video pair.
+    blink_frames : np.ndarray
+        Global frame indices where blinks were detected.
+    """
+
+    brightness = np.asarray(brightness)
+
+    if threshold is None:
+        low = np.percentile(brightness, 20)
+        high = np.percentile(brightness, 80)
+        threshold = (low + high) / 2
+
+    # Detect LED ON frames
+    led_on = brightness > threshold
+
+    # Rising edges → blink start
+    edges = np.diff(led_on.astype(int)) == 1
+    candidate_frames = np.where(edges)[0] + 1
+
+    # Filter noise
+    blink_frames = []
+    for f in candidate_frames:
+        if np.sum(led_on[f:f + min_on_frames]) >= min_on_frames:
+            blink_frames.append(f)
+
+    blink_frames = np.array(blink_frames)
+
+    # Expected blink spacing
+    expected_frames = int(round(blink_period_sec * fps))
+
+    # Compute video boundaries
+    video_starts = np.cumsum(video_lengths[:-1])
+    video_ends = np.cumsum(video_lengths[1:])
+
+    missing_per_cut = []
+    
+    for i in range(len(video_lengths) - 2):
+        # Last blink in video i
+        blinks_current = blink_frames[
+            (blink_frames >= video_starts[i]) &
+            (blink_frames < video_ends[i])
+        ]
+    
+        # First blink in video i+1
+        blinks_next = blink_frames[
+            (blink_frames >= video_starts[i + 1]) &
+            (blink_frames < video_ends[i + 1])
+        ]
+    
+        if len(blinks_current) == 0 or len(blinks_next) == 0:
+            missing_per_cut.append(0)
+            continue
+    
+        last_blink = blinks_current[-1]
+        first_blink = blinks_next[0]
+    
+        gap = first_blink - last_blink
+        is_missing = int( np.abs(gap - expected_frames) > tolerance ) 
+        missing = max(0, (expected_frames - gap) * is_missing )
+    
+        missing_per_cut.append(int(missing))
+        
+    missing_per_cut = np.array(missing_per_cut) 
+        
+    if missing_cycles:
+        missing_cycle_frames = np.array(missing_cycles) * expected_frames
+        missing_per_cut = missing_per_cut + missing_cycle_frames
+        
+    # ---------- Build cumulative missing before each video ---------
+    cumulative_missing = np.zeros(len(video_lengths)-1, dtype=int)
+    for i in range(1, len(video_lengths)-1):
+        cumulative_missing[i] = cumulative_missing[i - 1] + missing_per_cut[i - 1]
+        
+    # ---------- Divisor frame computation ----------
+    divisor_frames = None
+    if divisor:
+        divisor_frames = []
+    
+        for k in range(len(blink_frames)):
+            
+            blink_curent = blink_frames[k]
+            
+            for l in range(divisor):
+                ideal_time = blink_curent + round(expected_frames * l / divisor)
+
+                vid_blink = np.searchsorted(video_ends, blink_curent, side="right")
+                vid_current = np.searchsorted(video_ends, ideal_time, side="right")
+                
+                # check if doesn't go after the recorded time
+                if vid_current < len(video_ends):
+                    cum_difference = cumulative_missing[vid_current] - cumulative_missing[vid_blink]
+    
+                    # check if it is recorded
+                    if cum_difference > 0:
+                        
+                        frames_to_next_video = video_ends[vid_blink] - blink_curent + missing_per_cut[vid_blink]
+                        is_recorded = frames_to_next_video < round(expected_frames * l / divisor)
+    
+                        if is_recorded:
+                            recorded_frame = ideal_time - cum_difference                        
+                            divisor_frames.append( recorded_frame )
+                    
+                    else:
+                        recorded_frame = ideal_time - cum_difference                        
+                        divisor_frames.append( recorded_frame )
+            
+        divisor_frames = np.array(divisor_frames)
+    
+    start,end = lims
+    filt_blink = (blink_frames > start) & (blink_frames < end)  
+    blink_frames = blink_frames[filt_blink]
+
+    filt_div = (divisor_frames > start) & (divisor_frames < end)  
+    divisor_frames = divisor_frames[filt_div]
+    
+    # ---------- Calculate times ----------
+    start_time = start / fps
+    
+    divisor_vid = np.searchsorted(video_ends, divisor_frames, side="right")
+    divisor_missing = cumulative_missing[divisor_vid]
+    divisor_time = (divisor_frames+divisor_missing) / fps
+
+    return missing_per_cut, blink_frames, divisor_frames, divisor_time-start_time
+
+def is_reconstructable(frames, video_lengths, N_reconstruction, times, shift=0, fps=30 ):
+    """
+    Checks whether I can do the full reconstruction of at all intended times within the same video.
+
+    Parameters
+    ----------
+    frames: list[int]
+        Frames at which each reconstruction starts.
+    video_lengths : list[int]
+        Length (in frames) of each video, in order.
+    N_reconstruction: int
+        Number of frames to use for the reconstruction.
+    times: list
+        times corresponding to each frame
+    shift: int
+        Shifts the starting point of each reconstruction        
+    fps: float
+        Fps of video recording
+
+    Returns
+    -------
+    None.
+
+    """
+    video_starts = np.cumsum(video_lengths[:-1])
+    video_ends = np.cumsum(video_lengths[1:])
+
+    frames_start_vid = np.searchsorted(video_ends, frames + shift, side="right")
+    frames_end_vid = np.searchsorted(video_ends, frames + N + shift, side="right")
+    
+    changes_vid = frames_end_vid - frames_start_vid
+    
+    if np.sum(changes_vid) > 0:
+        ind = np.where( changes_vid>0 )[0]
+        overshoot = frames[ind]+N+shift -  video_ends[frames_start_vid[ind]] 
+
+        print(f'With shift {shift}, issue(s) at reconstruction n° {ind} (located at frame {frames[ind]+shift}.')
+        print(f'Number of frames in next video (or in no video): {overshoot}')
+        
+        #Calculate minimum a maximum posible shifts (from reference 0 shift)
+        vid_start_distance =  np.min(frames - video_starts[frames_start_vid])
+        vid_end_distance = np.min(video_ends[frames_end_vid] - frames+N)
+        
+        print(f'Minimum possible shift: {-vid_start_distance}. Maximum possible shift: {vid_end_distance}.' )
+        
+    else: 
+        #Calculate minimum a maximum posible shifts (from reference 0 shift)
+        vid_start_distance =  np.min(frames - video_starts[frames_start_vid])
+        vid_end_distance = np.min(video_ends[frames_end_vid] - frames+N)
+        
+        print('No Issues')
+        print(f'Minimum possible shift: {-vid_start_distance}. Maximum possible shift: {vid_end_distance}.' )
+    
+    print()
+    
+    n_frames = frames + shift
+    n_times = times + shift / fps
+    
+    return n_frames, frames_start_vid, n_times
+    
 
 
 #%%
 # 30 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/25-12-12/'
+path = '/Volumes/Ice blocks/Scan water channel/25-11-17/'
 
 data = np.load(path+'calibration_data.npz')
 angle_xy, angle_yz, angle_xz = float(data['arr_3']), float(data['arr_4']), float(data['arr_5'])
@@ -295,14 +519,19 @@ cal_up = data['arr_0']
 cal_do = data['arr_1']
 wall_distance = float(data['arr_2'])
 
-#fps 24
-dvids = [cv2.VideoCapture( path + 'Camera down/DSC_3749.MOV'), # starts 2650
-         cv2.VideoCapture( path + 'Camera down/DSC_3750.MOV')  # ends (last frame)
+
+dvids = [cv2.VideoCapture( path + 'Camera down/DSC_0488.MOV'), # starts 3028
+         cv2.VideoCapture( path + 'Camera down/DSC_0489.MOV'), 
+         cv2.VideoCapture( path + 'Camera down/DSC_0490.MOV'), 
+         cv2.VideoCapture( path + 'Camera down/DSC_0491.MOV'), 
+         cv2.VideoCapture( path + 'Camera down/DSC_0492.MOV')  # ends 3570
          ]
 
-uvids = [cv2.VideoCapture( path + 'Camera up/DSC_1751.MOV'), # starts 3247
-         cv2.VideoCapture( path + 'Camera up/DSC_1752.MOV'), #
-         cv2.VideoCapture( path + 'Camera up/DSC_1753.MOV')  # ends (last frame)
+#fps 24
+uvids = [cv2.VideoCapture( path + 'Camera up/DSC_3742.MOV'), # starts 2382
+         cv2.VideoCapture( path + 'Camera up/DSC_3743.MOV'), #
+         cv2.VideoCapture( path + 'Camera up/DSC_3744.MOV'), #
+         cv2.VideoCapture( path + 'Camera up/DSC_3745.MOV')  # ends 10835
          ]
 
 dlens = [0]+[int(dvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(dvids))]
@@ -310,37 +539,35 @@ ulens = [0]+[int(uvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(uvid
 
 #fps 30, (supposedly 29.97)
 #%%
-l = 0
+l = -1
 
-# for i in [5003]:
-for i in range(5020,5050,1):
-    dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
-    # im = np.array( dvids[l].read()[1] )[:,:,::-1]
-    # im = np.array( dvids[l].read()[1] )[30:80,840:890,::-1]
-    im = np.array( dvids[l].read()[1] )[:,1700:3100,::-1]
-    # im = grayscale_im(im)
-    im = im[:,:,0]
-
-    plt.figure()
-    plt.imshow(im, cmap='gray', vmax=20) 
-    plt.title(i)
-    plt.show()
-    # print(i, np.mean(im), np.median(im))
-
-# for i in range(5015,5035,1):
-# # for i in range(5000,5030,1):
-#     uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-#     # im = np.array( uvids[l].read()[1] )[:,:,::-1]
-#     # im = np.array( uvids[l].read()[1] ) [1940:1990,880:940,::-1] 
-#     im = np.array( uvids[l].read()[1] ) [:,1700:3100,::-1] 
+# for i in range(3570,3575,1):
+#     dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
+#     im = np.array( dvids[l].read()[1] )[:,:,::-1]
+#     # im = np.array( dvids[l].read()[1] )[30:80,840:890,::-1]
+#     # im = np.array( dvids[l].read()[1] )[:,1700:3100,::-1]
 #     # im = grayscale_im(im)
-#     im = im[:,:,0]
+#     # im = im[:,:,0]
 
 #     plt.figure()
-#     plt.imshow(im, cmap='gray', vmax=30) 
+#     plt.imshow(im, cmap='gray', vmax=20) 
 #     plt.title(i)
 #     plt.show()
 #     # print(i, np.mean(im), np.median(im))
+
+for i in range(10830,10840,1):
+    uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+    im = np.array( uvids[l].read()[1] )[:,:,::-1]
+    # im = np.array( uvids[l].read()[1] ) [1940:1990,880:940,::-1] 
+    # im = np.array( uvids[l].read()[1] ) [:,1700:3100,::-1] 
+    # im = grayscale_im(im)
+    # im = im[:,:,0]
+
+    plt.figure()
+    plt.imshow(im, cmap='gray', vmax=30) 
+    plt.title(i)
+    plt.show()
+    # print(i, np.mean(im), np.median(im))
 
 
 
@@ -374,7 +601,7 @@ np.savez(path+'led_blink.npz', u_mes=u_mes, d_mes=d_mes)
 blink = np.load(path+'led_blink.npz')
 u_mes,d_mes = blink['u_mes'], blink['d_mes']
 
-threshold = [50]
+threshold = [18]
 plt.figure()
 plt.plot( u_mes , '.-')
 plt.plot( d_mes, '.-')
@@ -384,42 +611,83 @@ plt.show()
 
 #%%
 
-N = 60
-shift = -20
-end = 78707 #np.min([np.sum(ulens),np.sum(dlens)])
+# N = 60
+# shift = -80
+# end = 78707 #np.min([np.sum(ulens),np.sum(dlens)])
 
-d_frame, d_vid, d_leds = frame_position(d_mes, dlens, [3000, np.sum(dlens)], n_recons=60, threshold=50, minute_interval=1441)
-u_frame, u_vid, u_leds = frame_position(u_mes, ulens, [4000, np.sum(ulens)], n_recons=N, threshold=50, minute_interval=1801)
+# d_frame, d_vid, d_leds, d_time = frame_position(d_mes, dlens, [3028, 78870], n_recons=N, threshold=20, minute_interval=1801, missing_cycles=10)
+# u_frame, u_vid, u_leds, u_time = frame_position(u_mes, ulens, [2382, 78000], n_recons=N, threshold=11.06, minute_interval=1440)
+# d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
+
+# d_frame, u_frame = d_frame+shift, u_frame+shift
+# d_vid, u_vid = np.searchsorted(d_cuts[1:], d_frame), np.searchsorted(u_cuts[1:], u_frame)
+
+# d_Nvid, u_Nvid = np.searchsorted(d_cuts[1:], d_frame+N),  np.searchsorted(u_cuts[1:], u_frame+N)
+# if np.sum(u_Nvid-u_vid) > 0:
+#     ind = np.where( (u_Nvid-u_vid)>0 )[0]
+#     overshoot = u_frame[ind]+N - u_cuts[u_vid[ind]+1]     
+#     print(f'Issue with u at {ind}. Number of frames in next video: {overshoot}')
+# if np.sum(d_Nvid-d_vid) > 0:
+#     ind = np.where( (d_Nvid-d_vid)>0 )[0]
+#     overshoot = d_frame[ind]+N - d_cuts[d_vid[ind]+1]
+#     print(f'Issue with d at {ind}. Number of frames in next video: {overshoot}')
+
+# print(end, d_frame[-1]+N,  u_frame[-1]+N)
+
+# plt.figure()
+# plt.plot( u_mes, '.-')
+# plt.vlines( u_frame,0,70,colors='red')
+# # plt.vlines( u_frame+N,0,70,colors='magenta')
+# plt.vlines( u_cuts,0,70,colors='k',alpha=0.5)
+# # plt.scatter( u_frame, [50]*len(u_frame), c=u_vid )
+# plt.title('up')
+# plt.show()
+
+# plt.figure()
+# plt.plot( d_mes, '.-')
+# plt.vlines( d_frame,0,70,colors='red')
+# # plt.vlines( u_frame+N,0,70,colors='magenta')
+# plt.vlines( d_cuts,0,70,colors='k',alpha=0.5)
+# # plt.scatter( d_frame, [50]*len(d_frame), c=d_vid )
+# plt.title('down')
+# plt.show()
+
+
+N = 60
+shift = -70
+
 d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
 
-d_frame, u_frame = d_frame+shift, u_frame+shift
-d_vid, u_vid = np.searchsorted(d_cuts[1:], d_frame), np.searchsorted(u_cuts[1:], u_frame)
+d_missing, d_led, d_frame, d_time = count_missing_frames_with_video_lengths(d_mes, dlens[:], [3028, 78870], fps=30, 
+                                                                            threshold=20, divisor=2, missing_cycles=[0,0,10,0] )
+u_missing, u_led, u_frame, u_time = count_missing_frames_with_video_lengths(u_mes, ulens[:], [2382, 78000], fps=24, 
+                                                                            threshold=11.06, divisor=2 )
 
-d_Nvid, u_Nvid = np.searchsorted(d_cuts[1:], d_frame+N),  np.searchsorted(u_cuts[1:], u_frame+N)
-if np.sum(u_Nvid-u_vid) > 0:
-    ind = np.where( (u_Nvid-u_vid)>0 )[0]
-    overshoot = u_frame[ind]+N - u_cuts[u_vid[ind]+1]     
-    print(f'Issue with u at {ind}. Number of frames in next video: {overshoot}')
-if np.sum(d_Nvid-d_vid) > 0:
-    ind = np.where( (d_Nvid-d_vid)>0 )[0]
-    overshoot = d_frame[ind]+N - d_cuts[d_vid[ind]+1]
-    print(f'Issue with d at {ind}. Number of frames in next video: {overshoot}')
-
-print(end, d_frame[-1]+N,  u_frame[-1]+N)
+d_frame, d_vid, d_time = is_reconstructable(d_frame, dlens, N, d_time, shift=shift )
+u_frame, u_vid, u_time = is_reconstructable(u_frame, ulens, N, u_time, shift=shift, fps=24 )
 
 plt.figure()
-plt.plot( u_mes, '.-')
-plt.vlines( u_frame,0,70,colors='red')
-# plt.vlines( u_frame+N,0,70,colors='magenta')
-plt.vlines( u_cuts,0,70,colors='k',alpha=0.5)
-# plt.scatter( u_frame, [50]*len(u_frame), c=u_vid )
-plt.show()
-plt.figure()
-plt.plot( d_mes, '.-')
-plt.vlines( d_frame,0,70,colors='red')
-# plt.vlines( u_frame+N,0,70,colors='magenta')
+plt.plot( d_mes, '.-' )
+plt.vlines( d_led,0,20, color='r' )
+plt.vlines( d_frame,0,30, color='g', alpha=0.4 )
 plt.vlines( d_cuts,0,70,colors='k',alpha=0.5)
-# plt.scatter( d_frame, [50]*len(d_frame), c=d_vid )
+plt.grid()
+plt.title('d')
+plt.show()
+
+plt.figure()
+plt.plot( u_mes, '.-' )
+plt.vlines( u_led,0,20, color='r' )
+plt.vlines( u_frame,0,30, color='g', alpha=0.4 )
+plt.vlines( u_cuts,0,70,colors='k',alpha=0.5)
+plt.grid()
+plt.title('u')
+plt.show()
+
+plt.figure()
+plt.plot( d_time/60, '.-' )
+plt.plot( u_time/60, '.-' )
+plt.grid()
 plt.show()
 
 #%%
