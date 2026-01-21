@@ -205,89 +205,6 @@ def frames_reconstruction(start, interval, times, len_vid):
         # print( ifram[ev[prob1]] - pos[prob1] )
         return pos - ifram[iv], iv, pos
 
-def frame_position(f_mes, lens, lims, divisor=2, threshold=10, minute_interval=1798, n_recons=60, missing_cycles=0):
-    """
-    Returns the frames where to start the recontruction of each profile
-
-    Parameters
-    ----------
-    f_mes : array
-        Mean brighness of image at LED position for each frame .
-    lens : list
-        List of lengths (in frames) of each video.
-    lims : [start,end]
-        starting and ending frames of experiment.
-    divisor : int, optional
-        How many profiles to be reconstructed per minute. The default is 2.
-    threshold : float, optional
-        Intensity threshold for f_mes. If f_mes>threshold then the led in that frame is considered lit. The default is 10.
-    minute_interval : int, optional
-        Number of frames per minute (more specifically frames between LED blinks). The default is 1798.
-    n_recons : int, optional
-        Number of frames to use for surface reconstruction. The default is 60.
-
-    Returns
-    -------
-    all_frames : array
-        Frames where to start reconstruction.
-    vid: array
-        Video in which all_frames are found.
-    frames_led : array
-        Frames where LED turns on.
-    """
-    start,end = lims[0], lims[1]
-    lens = lens[1:]
-    frames_led = np.where( np.diff((f_mes>threshold)*1.)>0.5 )[0] + 1
-        
-    cuts = np.cumsum(lens)
-    gaps = np.where(np.abs(np.diff(frames_led) - minute_interval) > 10)[0] #cut in video between this blink and next blink
-        
-    missing_frames = minute_interval * (missing_cycles+1) - np.diff(frames_led)[gaps]
-
-
-    missing_pos = np.searchsorted(cuts, frames_led[gaps])
-    
-    tcuts = np.copy(cuts)
-    for i in range(len(missing_frames)): tcuts[cuts>cuts[missing_pos[i]]] += missing_frames[i]
-    
-    tvid = np.zeros(cuts[-1]+np.sum(missing_frames))
-    for i in range(len(tcuts)-1): tvid[tcuts[i]:tcuts[i+1]] = i+1
-    for i in range(len(missing_frames)): tvid[tcuts[missing_pos[i]]:tcuts[missing_pos[i]]+missing_frames[i]] = np.nan
-    
-    tframes_led = np.copy(frames_led)
-    for i in range(len(missing_frames)): tframes_led[frames_led>cuts[missing_pos[i]]] += missing_frames[i]
-    
-    dist_frames = minute_interval/divisor
-    intermediate_frames = []
-    for i in range(1,divisor):
-        intermediate_frames.append( tframes_led + int(dist_frames*i) )
-    
-    tall_frames = np.sort( np.hstack((tframes_led, np.hstack(intermediate_frames) )) )
-    all_frames = np.copy(tall_frames)
-    for i in range(len(missing_frames)): all_frames[tall_frames>tcuts[missing_pos[i]]] += -missing_frames[i]
-    
-    fil = (all_frames>=start) * (all_frames<=end) #+np.sum(missing_frames))
-    all_frames = all_frames[fil]
-    
-    filt = (tall_frames>=start) * (tall_frames<=end+np.sum(missing_frames))
-    tall_frames = tall_frames[ filt ]
-    
-    if np.isnan( np.sum(tvid[tall_frames]) ) or np.isnan( np.sum(tvid[tall_frames+n_recons]) ):
-        print('One or more profiles cannot be fully reconstructed')
-        plt.figure()
-        plt.vlines(tall_frames,0,len(lens)-1, colors='red',label='Start frame',alpha=0.5)
-        plt.vlines(tall_frames+n_recons,0,len(lens)-1, colors='green',label='End frame',alpha=0.5)
-        plt.plot( np.arange(len(tvid)), tvid,'.-' )
-        plt.legend()
-        plt.show()
-    else: print('No issues')    
-
-    ttime = tall_frames / minute_interval * 60 # time in secs 
-        
-    return all_frames, tvid[all_frames].astype(int), frames_led, ttime
-
-
-
 
 def count_missing_frames_with_video_lengths( brightness, video_lengths, lims, fps=30, threshold=None, divisor=None, missing_cycles=None,
                                             blink_period_sec=60.0, min_on_frames=1, tolerance = 5):
@@ -466,8 +383,12 @@ def is_reconstructable(frames, video_lengths, N_reconstruction, times, shift=0, 
 
     Returns
     -------
-    None.
-
+    n_frames: list[int]
+        The shifted frames.
+    frames_start_vid: list[ind]
+        The video where each n_frame belongs.
+    n_times: list[int]
+        The shifted times.
     """
     video_starts = np.cumsum(video_lengths[:-1])
     video_ends = np.cumsum(video_lengths[1:])
@@ -506,6 +427,62 @@ def is_reconstructable(frames, video_lengths, N_reconstruction, times, shift=0, 
     return n_frames, frames_start_vid, n_times
     
 
+def pixel_filtering(xi, xc, ili, extra_tol=10, filter_1=720, filter_2=22, filter_3=25, top_removal=False, print_sd=False):
+    """
+    Filters out the incorrect points of the surface recontruction. It consists of 3 filters:
+        1. (Optional) A final at the top part of the ice. Removes the points above the top surface of the ice
+        2. If the reconstructed surface is too noisy, it is completely discarded.
+        3. Points that are too separetad from the mean value are also discarded.
+    Discarded/Reemoved point are replaced with NaN's in the returned array
+
+    Parameters
+    ----------
+    xi : 1D-array
+        x position of the ice.
+    xc : 1D-array
+        x position of the wall.
+    ili : 1D-arrat
+        Vertical pixel position.
+    extra_tol : float, optional
+        How much bigger the mean distance between the ice and the wall should be to stop considering it a part of the ice. The default is 10.
+    filter_1 : float, optional
+        Vertical pixel position where to stop looking for the surface of the ice. The default is 720.
+    filter_2 : float, optional
+        Threshold of standard deviation of the ice x position (after fisrt filter was apply if relevant) for the second filter (2.). The default is 22.
+    filter_3 : float, optional
+        Distance threshold to mean of the ice x position (after fisrt filter was apply if relevant) for the third filter (3.). The default is 25.
+    top_removal : bool, optional
+        Set to True to apply the first filter (1.). The default is False.
+    print_sd : bool, optional
+        Prints the standard deviation of the ice x position (after fisrt filter was apply if relevant). The default is False.
+
+    Returns
+    -------
+    xii : 1D-array
+        Copy of xi, with the masked points replaced with NaN's.
+    """
+        
+    xii = np.copy(xi)
+
+    if top_removal:
+        uplim = np.median(xi - xc) + extra_tol #110
+        ifil = np.where( (np.abs(xi - xc) > uplim) * (ili < filter_1) )[0]
+        fil1 = np.zeros_like(xii, dtype=bool)
+        if len(ifil)>0:
+            fil1[:ifil[-1]+1] = True
+            xii[fil1] = np.nan
+    
+    fil2 = np.nanstd(xii) > filter_2
+
+    if print_sd: print(np.nanstd(xii))
+
+    if fil2:
+        xii[:] = np.nan
+    else:
+        fil3 = np.abs(xii - np.nanmean(xii)) > filter_3 
+        xii[fil3] = np.nan
+    
+    return xii
 
 #%%
 # 30 fps
@@ -611,50 +588,9 @@ plt.show()
 
 #%%
 
-# N = 60
-# shift = -80
-# end = 78707 #np.min([np.sum(ulens),np.sum(dlens)])
-
-# d_frame, d_vid, d_leds, d_time = frame_position(d_mes, dlens, [3028, 78870], n_recons=N, threshold=20, minute_interval=1801, missing_cycles=10)
-# u_frame, u_vid, u_leds, u_time = frame_position(u_mes, ulens, [2382, 78000], n_recons=N, threshold=11.06, minute_interval=1440)
-# d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
-
-# d_frame, u_frame = d_frame+shift, u_frame+shift
-# d_vid, u_vid = np.searchsorted(d_cuts[1:], d_frame), np.searchsorted(u_cuts[1:], u_frame)
-
-# d_Nvid, u_Nvid = np.searchsorted(d_cuts[1:], d_frame+N),  np.searchsorted(u_cuts[1:], u_frame+N)
-# if np.sum(u_Nvid-u_vid) > 0:
-#     ind = np.where( (u_Nvid-u_vid)>0 )[0]
-#     overshoot = u_frame[ind]+N - u_cuts[u_vid[ind]+1]     
-#     print(f'Issue with u at {ind}. Number of frames in next video: {overshoot}')
-# if np.sum(d_Nvid-d_vid) > 0:
-#     ind = np.where( (d_Nvid-d_vid)>0 )[0]
-#     overshoot = d_frame[ind]+N - d_cuts[d_vid[ind]+1]
-#     print(f'Issue with d at {ind}. Number of frames in next video: {overshoot}')
-
-# print(end, d_frame[-1]+N,  u_frame[-1]+N)
-
-# plt.figure()
-# plt.plot( u_mes, '.-')
-# plt.vlines( u_frame,0,70,colors='red')
-# # plt.vlines( u_frame+N,0,70,colors='magenta')
-# plt.vlines( u_cuts,0,70,colors='k',alpha=0.5)
-# # plt.scatter( u_frame, [50]*len(u_frame), c=u_vid )
-# plt.title('up')
-# plt.show()
-
-# plt.figure()
-# plt.plot( d_mes, '.-')
-# plt.vlines( d_frame,0,70,colors='red')
-# # plt.vlines( u_frame+N,0,70,colors='magenta')
-# plt.vlines( d_cuts,0,70,colors='k',alpha=0.5)
-# # plt.scatter( d_frame, [50]*len(d_frame), c=d_vid )
-# plt.title('down')
-# plt.show()
-
-
 N = 60
 shift = -70
+# end = 78707 #np.min([np.sum(ulens),np.sum(dlens)])
 
 d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
 
@@ -821,40 +757,34 @@ plt.title(r'$h$ (mm)',fontsize=12, pad=50)
 plt.show()
 
 
-#%%
 
-i = 3288
-algo = 59
+#%%
+# =============================================================================
+# New code
+# =============================================================================
+# testing cmaera down laser recognition
+i = 10000
+disp = 0
 l = 0
 
-t0=time()
-dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i+algo)
+lims = [None,None,700,1900]
+filter_2 = 22
+filter_3 = 25 #np.nanstd(xii) * 3.
+
+dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i+disp)
 imo = np.array( dvids[l].read()[1] )[:,:,::-1]
 
-t1 = time()
-# im = grayscale_im(imo[:2090,1100:2400])
-im = grayscale_im(imo[:,1700:3100])
-# im[2090:] = 0
+im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
 ili, smi, sma = laser_edges(im, sigma=20)
-smi,sma = smi+1700, sma+1700
+if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
+
 fma = fit_wall_pixels(ili, sma)
 xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
 zi = zc
-t2 = time()
 
-t3 = time()
-xii = np.copy(xi)
+xii = pixel_filtering(xi, xc, ili, top_removal=False, filter_2=filter_2, filter_3=filter_3)
 
-fil2 = np.nanstd(xii) > 22
-if fil2:
-    xii[:] = np.nan
-else:
-    fil3 = np.abs(xii - np.nanmean(xii)) > 25 #np.nanstd(xii) * 3.
-    xii[fil3] = np.nan
-t4 = time()
-
-print(t2-t1, t4-t3, t1-t0)
-print(np.sum(np.isnan(xii)), xii)
+print(np.sum(np.isnan(xii)))
 
 plt.figure()
 plt.imshow(imo, cmap='gray')
@@ -865,108 +795,160 @@ plt.plot(fma, ili,'y--',alpha=0.5)
 plt.plot(smi[np.isnan(xii)], ili[np.isnan(xii)],'m.',alpha=0.5)
 plt.show()
 
-
-# i = 24445
-# algo = 15
-# l = 1
-
-# t0 = time()
-# uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i+algo)
-# imo = np.array( uvids[l].read()[1] )[:,:,::-1]
-
-# # vid = uvids[u_vid[i]]
-# # ini = u_frame[i] - u_cuts[u_vid[i]]
-# # vid.set(cv2.CAP_PROP_POS_FRAMES, ini + algo)
-# # imo = np.array( vid.read()[1] )
-# # im = grayscale_im(im)
-
-# t1 = time()
-
-# im = grayscale_im(imo[:,1700:3100])
-# ili, smi, sma = laser_edges(im, sigma=20)
-# # smi,sma = smi+1600, sma+1600
-# fma = fit_wall_pixels(ili, sma)
-# xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
-# zi = zc
-# t2 = time()
-
-# t3 = time()
-# xii = np.copy(xi)
-
-# uplim = np.median(xi - xc) + 10 #110
-# ifil = np.where( (np.abs(xi - xc) > uplim) * (ili<720) )[0]
-# fil1 = np.zeros_like(xii, dtype=bool)
-# if len(ifil)>0:
-#     fil1[:ifil[-1]+1] = True
-#     xii[fil1] = np.nan
-
-# fil2 = np.nanstd(xii) > 22
-# print(np.nanstd(xii))
-# if fil2:
-#     xii[:] = np.nan
-# else:
-#     fil3 = np.abs(xii - np.nanmean(xii)) > 25 #np.nanstd(xii) * 3.
-#     xii[fil3] = np.nan
-# t4 = time()
-
-# # print(ifil[-1], fil2)
-# print(t2-t1, t4-t3, t1-t0)
-# # print( xii )
-
-
 # plt.figure()
-# # plt.imshow(imo, cmap='gray')
-# plt.imshow(im, cmap='gray')
-# plt.plot(smi, ili,'b-',alpha=0.5)
-# plt.plot(sma, ili,'r-',alpha=0.5)
-# plt.plot(fma, ili,'y--',alpha=0.5)
-# plt.plot(smi[np.isnan(xii)], ili[np.isnan(xii)],'m.',alpha=0.5)
+# plt.imshow( grayscale_im(imo), vmax = 10 )
 # plt.show()
 
-# # gg= normalize( np.gradient(gaussian(im,20),axis=1) )
-# # plt.figure()
-# # # plt.imshow( gg )
-# # plt.plot( gg[550,:] )
-# # plt.show()
-
-
 #%%
-i = 10000 #430
-l = 0
-# uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-# imo = np.array( uvids[l].read()[1] )[:,:,::-1]
-dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-imo = np.array( dvids[l].read()[1] )[:,:,::-1]
-t1 = time()
-# im = grayscale_im(imo[:,1400:2600])
-im = grayscale_im(imo[:2090,1100:2400])
 
-ny,nx = np.shape(im)
-g2 = gaussian(im, 10)
-dg = normalize( np.gradient(g2,axis=1) )
-mdg = np.median(dg)
+# testing cmaera down laser recognition
+i = 10000
+algo = 107
+l = 3
 
-ili = np.arange(ny)
+lims = [None,None,700,1900]
+extra_tol = 10
+filter_1 = 320
+filter_2 = 22
+filter_3 = 25 #np.nanstd(xii) * 3.
 
-ima, imi = np.full(len(dg), np.nan, dtype=int), np.full(len(dg), np.nan, dtype=int)
-for j in range(len(dg)):
-    arr1 = find_peaks( dg[j,:], height= mdg+0.1, prominence=0.1)[0]
-    arr2 = find_peaks(-dg[j,:], height=-mdg+0.1, prominence=0.1)[0]    
-    ima[j] = np.concatenate( (arr1[:1],[np.argmax(dg[j,:])]) )[0]
-    imi[j] = np.concatenate( (arr2[:1],[np.argmin(dg[j,:])]) )[0]
-smi, sma = subpixel(normalize(dg), imi, ili), subpixel(normalize(dg), ima, ili)
+
+uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i+algo)
+imo = np.array( uvids[l].read()[1] )[:,:,::-1]
+
+im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
+ili, smi, sma = laser_edges(im, sigma=20)
+if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
+
+fma = fit_wall_pixels(ili, sma)
+xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+zi = zc
+
+xii = pixel_filtering(xi, xc, ili, top_removal=True, extra_tol=extra_tol, filter_1=filter_1, filter_2=filter_2, filter_3=filter_3)
+
+print(np.sum(np.isnan(xii)))
+
 
 plt.figure()
-plt.imshow(dg)
-# plt.imshow(im)
-plt.plot(sma, ili, '--')
-plt.plot(smi, ili, '-')
+plt.imshow(imo, cmap='gray')
+# plt.imshow(im, cmap='gray')
+plt.plot(smi, ili,'b-',alpha=0.5)
+plt.plot(sma, ili,'r-',alpha=0.5)
+plt.plot(fma, ili,'y--',alpha=0.5)
+plt.plot(smi[np.isnan(xii)], ili[np.isnan(xii)],'m.',alpha=0.5)
 plt.show()
 
+# plt.figure()
+# plt.imshow( grayscale_im(imo), vmax = 10 )
+# plt.show()
+
+#%%
+
+t1 = time()
+
+ny,nx, _ = np.shape(dvids[0].read()[1])
+with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
+
+    # Down
+    nt = len(d_frame)
+    gdo = f.create_group('Down')
+
+    gdo_t = gdo.create_dataset('time', (len(nt),), dtype='f') 
+    gdo_x = gdo.create_dataset('x', (nt,ny*N), dtype='f') 
+    gdo_y = gdo.create_dataset('y', (nt,ny*N), dtype='f') 
+    gdo_z = gdo.create_dataset('z', (nt,ny*N), dtype='f') 
+    
+    lims = [None,None,700,1900]
+    filter_2 = 22
+    filter_3 = 25 
+
+    gdo_t[:] = d_time
+    for i in tqdm(range(nt)):
+        
+        vid = dvids[d_vid[i]]
+        ini = d_frame[i] - d_cuts[d_vid[i]]
+        vid.set(cv2.CAP_PROP_POS_FRAMES, ini)
+
+        for j in range(N):
+            
+            imo = np.array( vid.read()[1] )[:,:,::-1]
+            
+            im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
+            ili, smi, sma = laser_edges(im, sigma=20)
+            if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
+            
+            fma = fit_wall_pixels(ili, sma)
+            xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+            zi = zc
+            
+            xii = pixel_filtering(xi, xc, ili, top_removal=False, filter_2=filter_2, filter_3=filter_3)
+            
+            gdo_x[i][j*ny:(j+1)*ny] = xii
+            gdo_y[i][j*ny:(j+1)*ny] = yi
+            gdo_z[i][j*ny:(j+1)*ny] = zi
+            
+            
+    # Up
+    nt = len(u_frame)
+    gup = f.create_group('Up')
+
+    gup_t = gup.create_dataset('time', (len(nt),), dtype='f') 
+    gup_x = gup.create_dataset('x', (nt,ny*N), dtype='f') 
+    gup_y = gup.create_dataset('y', (nt,ny*N), dtype='f') 
+    gup_z = gup.create_dataset('z', (nt,ny*N), dtype='f') 
+    
+    lims = [None,None,700,1900]
+    extra_tol = 10
+    filter_1 = 320
+    filter_2 = 22
+    filter_3 = 25 
+
+    gup_t[:] = u_time
+    for i in tqdm(range(nt)):
+        
+        vid = uvids[u_vid[i]]
+        ini = u_frame[i] - u_cuts[u_vid[i]]
+        vid.set(cv2.CAP_PROP_POS_FRAMES, ini)
+
+        for j in range(N):
+            
+            imo = np.array( vid.read()[1] )[:,:,::-1]
+
+            im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
+            ili, smi, sma = laser_edges(im, sigma=20)
+            if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
+
+            fma = fit_wall_pixels(ili, sma)
+            xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+            zi = zc
+
+            xii = pixel_filtering(xi, xc, ili, top_removal=True, extra_tol=extra_tol, filter_1=filter_1, filter_2=filter_2, filter_3=filter_3)
+
+            gup_x[i][j*ny:(j+1)*ny] = xii
+            gup_y[i][j*ny:(j+1)*ny] = yi
+            gup_z[i][j*ny:(j+1)*ny] = zi    
+
+t2 = time()
+print(t2-t1)
+
+#%%
+
+with h5py.File(path + 'reconstructed_profile.hdf5', 'r') as f:
+    
+    tg = f['Up/time'][:]
+    xg = f['Up/x'][:]
+
+    print(tg, xg)
+    
+    tg = f['Down/time'][:]
+    xg = f['Down/x'][:]
+
+    print(tg, xg)
+#%
+
 #%%
 
 
-#%%
 #%%
 # =============================================================================
 # Back iamge
