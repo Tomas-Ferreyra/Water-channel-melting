@@ -32,7 +32,43 @@ from skimage.feature import blob_log
 from skimage.util import img_as_ubyte
 
 
-def calib_invzl(v, points, coord, x0s=[[50,300]], dis_bar=False, method='SLSQP'):
+def _project_error(sol, xp, yp, rp, v, coord):
+    if coord == 0: X, Y, Z = rp, sol[0], sol[1]
+    elif coord == 1: X, Y, Z = sol[0], rp, sol[1]
+    else: X, Y, Z = sol[0], sol[1], rp
+
+    xtop = (v[0]*X + v[1]*Y + v[2]*Z + v[3]
+            + v[4]*X*X + v[5]*Y*Y + v[6]*X*Y)
+
+    ytop = (v[7]*X + v[8]*Y + v[9]*Z + v[10]
+            + v[11]*X*X + v[12]*Y*Y + v[13]*X*Y)
+
+    bot = (v[14]*X + v[15]*Y + v[16]*Z + 1
+           + v[17]*X*X + v[18]*Y*Y + v[19]*X*Y)
+
+    return np.array([xtop / bot - xp, ytop / bot - yp ])
+
+def calib_invzl_fast(v, points, coord, dis_bar=False, method='SLSQP', x0s=[[50,300]]):
+
+    N = points.shape[0]
+    r1 = np.empty(N)
+    r2 = np.empty(N)
+
+    _ls = least_squares
+    _proj = _project_error
+
+    for i in tqdm(range(N), disable=dis_bar):
+        xp, yp, rp = points[i]
+        x0 = x0s[i % len(x0s)]
+
+        res = _ls(_proj, x0, args=(xp, yp, rp, v, coord), method=method)
+        r1[i], r2[i] = res.x
+
+    return r1, r2
+
+
+
+def calib_invzl(v, points, coord, dis_bar=False, method='SLSQP', x0s=[[50,300]]):
     """
     Parameters
     ----------
@@ -115,6 +151,7 @@ def laser_edges(im, sigma=20):
     # imi = np.array( [ (find_peaks(-dg[i,:], height=-mdg+0.1, prominence=0.1)[0])[0] for i in range(len(dg)) ] )
 
     ima, imi = np.full(len(dg), np.nan, dtype=int), np.full(len(dg), np.nan, dtype=int)
+    
     for j in range(len(dg)):
         arr1 = find_peaks( dg[j,:], height= mdg+0.1, prominence=0.1)[0]
         arr2 = find_peaks(-dg[j,:], height=-mdg+0.1, prominence=0.1)[0]    
@@ -124,19 +161,72 @@ def laser_edges(im, sigma=20):
     smi, sma = subpixel(normalize(dg), imi, ili), subpixel(normalize(dg), ima, ili)
     return ili, smi, sma
 
+def laser_edges_fast(im, sigma=20):
+    ny, nx = im.shape
+
+    g2 = gaussian(im, sigma)
+    dg = np.gradient(g2, axis=1)
+    dg = normalize(dg)
+
+    mdg = np.median(dg)
+    ili = np.arange(ny)
+
+    ima = np.empty(ny, dtype=int)
+    imi = np.empty(ny, dtype=int)
+
+    _fp = find_peaks
+    _argmax = np.argmax
+    _argmin = np.argmin
+
+    for j in range(ny):
+        row = dg[j]
+
+        pmax, _ = _fp(row, height=mdg+0.1, prominence=0.1)
+        pmin, _ = _fp(-row, height=-mdg+0.1, prominence=0.1)
+
+        ima[j] = pmax[0] if pmax.size else _argmax(row)
+        imi[j] = pmin[0] if pmin.size else _argmin(row)
+
+    smi = subpixel(dg, imi, ili)
+    sma = subpixel(dg, ima, ili)
+
+    return ili, smi, sma
+
+
 def cuad(x,a,b,c):
     return a * x**2 + b * x + c 
 
+# def fit_wall_pixels(ili, sma, distance=100):
+#     order = np.argsort(sma)
+#     da = np.where( np.diff(sma[order]) > distance )[0]+1
+#     os = np.split(order,da)
+#     fma = np.zeros_like(sma)
+#     for j in range(len(os)):
+#         if len(os[j]) > 2:
+#             (a,b,c),cov = curve_fit(cuad, ili[os[j]], sma[os[j]])
+#             fma[ili[os[j]]] = cuad(ili[os[j]], a,b,c)
+#         else: fma[ili[os[j]]] = sma[ili[os[j]]]
+
+#     return fma
+
 def fit_wall_pixels(ili, sma, distance=100):
     order = np.argsort(sma)
-    da = np.where( np.diff(sma[order]) > distance )[0]+1
-    os = np.split(order,da)
-    fma = np.zeros_like(sma)
-    for j in range(len(os)):
-        if len(os[j]) > 2:
-            (a,b,c),cov = curve_fit(cuad, ili[os[j]], sma[os[j]])
-            fma[ili[os[j]]] = cuad(ili[os[j]], a,b,c)
-        else: fma[ili[os[j]]] = sma[ili[os[j]]]
+
+    da = np.where(np.diff(sma[order]) > distance)[0] + 1
+    segments = np.split(order, da)
+
+    fma = np.empty_like(sma)
+
+    for idx in segments:
+        n = idx.size
+
+        if n > 2:
+            x = ili[idx]
+            y = sma[idx]
+            a, b, c = np.polyfit(x, y, 2)
+            fma[x] = a*x*x + b*x + c
+        else:
+            fma[ili[idx]] = sma[idx]
 
     return fma
 
@@ -145,32 +235,58 @@ def wall_d_y(y, y0s, x0s):
     m = (x0s[1] - x0s[0]) / (y0s[1] - y0s[0])
     return m * (y - y0s[0]) + x0s[0]
 
-# def ice_boundary(ili, smi, sma, x0s, y0s, wall_distace, dis_bar=True, method='SLSQP'):
-#     wall_d = np.ones_like(ili) * wall_distace #distance from grid to window in mm (from fisrt point)
-#     points = np.vstack((sma,ili,wall_d)).T
-#     yr, zr = calib_invzl(cal_up, points, 0, dis_bar=dis_bar, method=method)
+
+# def ice_boundary(ili, smi, sma, wall_distace, calib, dis_bar=True, method='SLSQP'):
+    # wall_d = np.ones_like(ili) * wall_distace #distance from grid to window in mm (from fisrt point)
+    # points = np.vstack((sma,ili,wall_d)).T
+    # yr, zr = calib_invzl(calib, points, 0, dis_bar=dis_bar, method=method)    
+    # yc, zc, dwall = yr, zr, wall_d
     
-#     # # dwall = wall_d_y(yr, [294,-390], [-7.5,-3])
-#     # dwall = wall_d_y(yr, x0s, y0s)
-#     # points = np.vstack((sma,ili,dwall)).T
-#     # yc, zc = calib_invzl(cal_up, points, 0, dis_bar=dis_bar)
-#     yc, zc, dwall = yr, zr, wall_d
-    
-#     points = np.vstack((smi,ili,zc)).T
-#     xi, yi = calib_invzl(cal_up, points, 2, dis_bar=dis_bar, method=method)
-    
-#     return dwall, yc, zc, xi, yi
+    # points = np.vstack((smi,ili,zc)).T
+    # xi, yi = calib_invzl(calib, points, 2, dis_bar=dis_bar, method=method)
+    # return dwall, yc, zc, xi, yi
 
 def ice_boundary(ili, smi, sma, wall_distace, calib, dis_bar=True, method='SLSQP'):
-    wall_d = np.ones_like(ili) * wall_distace #distance from grid to window in mm (from fisrt point)
-    points = np.vstack((sma,ili,wall_d)).T
-    yr, zr = calib_invzl(calib, points, 0, dis_bar=dis_bar, method=method)    
-    yc, zc, dwall = yr, zr, wall_d
-    
-    points = np.vstack((smi,ili,zc)).T
-    xi, yi = calib_invzl(calib, points, 2, dis_bar=dis_bar, method=method)
-    
-    return dwall, yc, zc, xi, yi
+    n = ili.size
+
+    # Preallocate
+    wall_d = np.empty(n, dtype=np.float32)
+    wall_d.fill(wall_distance)
+
+    points = np.empty((n, 3), dtype=np.float64)
+    points[:, 0], points[:, 1], points[:, 2] = sma, ili, wall_d
+
+    yr, zr = calib_invzl(calib, points, 0, dis_bar, method)
+    yc, zc = yr, zr
+
+    # Second transform (reuse points)
+    points[:, 0], points[:, 2] = smi, zc
+
+    xi, yi = calib_invzl(calib, points, 2, dis_bar, method)
+
+    return wall_d, yc, zc, xi, yi
+
+def ice_boundary_fast(ili, smi, sma, wall_distace, calib, dis_bar=True, method='SLSQP'):
+    n = ili.size
+
+    # Preallocate
+    wall_d = np.empty(n, dtype=np.float32)
+    wall_d.fill(wall_distance)
+
+    points = np.empty((n, 3), dtype=np.float64)
+    points[:, 0], points[:, 1], points[:, 2] = sma, ili, wall_d
+
+    yr, zr = calib_invzl_fast(calib, points, 0, dis_bar, method)
+    yc, zc = yr, zr
+
+    # Second transform (reuse points)
+    points[:, 0], points[:, 2] = smi, zc
+
+    xi, yi = calib_invzl_fast(calib, points, 2, dis_bar, method)
+
+    return wall_d, yc, zc, xi, yi
+
+
 
 
 def initial_frames(times, fps=30):
@@ -516,6 +632,7 @@ ulens = [0]+[int(uvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(uvid
 
 #fps 30, (supposedly 29.97)
 #%%
+# Visualize some frames, useful for finding led position
 l = -1
 
 # for i in range(3570,3575,1):
@@ -587,7 +704,7 @@ plt.grid()
 plt.show()
 
 #%%
-
+# Finding frame where to start reconstruction (from led blinking)
 N = 60
 shift = -70
 # end = 78707 #np.min([np.sum(ulens),np.sum(dlens)])
@@ -626,144 +743,10 @@ plt.plot( u_time/60, '.-' )
 plt.grid()
 plt.show()
 
-#%%
-
-t1 = time()
-
-ny,nx, _ = np.shape(dvids[0].read()[1])
-ice_x, ice_y, ice_z = np.zeros((len(d_frame),ny*2*N)), np.zeros((len(d_frame),ny*2*N)), np.zeros((len(d_frame),ny*2*N)) 
-
-for i in tqdm(range(len(d_frame)), disable=False):
-# for i in tqdm(range(1)):
-    
-    vid = dvids[d_vid[i]]
-    ini = d_frame[i] - d_cuts[d_vid[i]]
-    vid.set(cv2.CAP_PROP_POS_FRAMES, ini)
-
-    for j in range(N):
-        
-        im = np.array( vid.read()[1] )[:,1700:3100]
-        im = grayscale_im(im)
-        # im[2090:] = 0
-        ili, smi, sma = laser_edges(im, sigma=20)
-        smi, sma = smi+1700, sma+1700 
-        fma = fit_wall_pixels(ili, sma)
-    
-        xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
-        # xc, yc, zc, xi, yi = ice_boundary(ili, smi, sma, wall_distance, cal_do, method='lm')
-        zi = zc
-        
-        dxi, dyi, dzi = np.copy(xi), np.copy(yi), np.copy(zi)
-        
-        # fil2_d = np.ones_like(xi, dtype=bool) * np.nanstd(dxi) > 22
-        fil2_d = np.nanstd(dxi) > 22
-        if fil2_d:
-            dxi, dyi, dzi = np.nan, np.nan, np.nan    
-        else:
-            fil3_d = np.abs(dxi - np.nanmedian(dxi)) > 25
-            dxi[fil3_d], dyi[fil3_d], dzi[fil3_d] = np.nan, np.nan, np.nan
-        
-        ice_x[i][2*j*ny:(2*j+1)*ny] = dxi
-        ice_y[i][2*j*ny:(2*j+1)*ny] = dyi
-        ice_z[i][2*j*ny:(2*j+1)*ny] = dzi
-        
-    vid = uvids[u_vid[i]]
-    ini = u_frame[i] - u_cuts[u_vid[i]]
-    vid.set(cv2.CAP_PROP_POS_FRAMES, ini)
-
-    for j in range(N):
-        
-        im = np.array( vid.read()[1] )[:,1700:3100]
-        im = grayscale_im(im)
-        ili, smi, sma = laser_edges(im, sigma=20)
-        smi, sma = smi+1700, sma+1700 
-        fma = fit_wall_pixels(ili, sma)
-
-        xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
-        # xc, yc, zc, xi, yi = ice_boundary(ili, smi, sma, wall_distance, cal_up, method='lm')
-        zi = zc
-        
-        uxi, uyi, uzi = np.copy(xi), np.copy(yi), np.copy(zi)
-        # uxi[:130] = np.nan
-        
-        uplim = np.median(xi - xc) + 10 #110
-        ifil = np.where( (np.abs(xi - xc) > uplim) * (ili<720) )[0]
-        fil1 = np.zeros_like(xi, dtype=bool)
-        if len(ifil)>0:
-            fil1[:ifil[-1]+1] = True        
-            uxi[fil1], uyi[fil1], uzi[fil1] = np.nan, np.nan, np.nan
-        
-        # fil2_u = np.ones_like(xi, dtype=bool) * np.nanstd(uxi) > 22
-        fil2_u = np.nanstd(uxi) > 22
-        if fil2_u:
-            uxi, uyi, uzi = np.nan, np.nan, np.nan    
-        else:
-            fil3_u = np.abs(uxi - np.nanmedian(uxi)) > 25
-            uxi[fil3_u], uyi[fil3_u], uzi[fil3_u] = np.nan, np.nan, np.nan
-
-        ice_x[i][(2*j+1)*ny:(2*j+2)*ny] = uxi
-        ice_y[i][(2*j+1)*ny:(2*j+2)*ny] = uyi
-        ice_z[i][(2*j+1)*ny:(2*j+2)*ny] = uzi
-    
-# u_vid[i], u_vids[u_vid[i]].get_data(0)
-
-np.save(path+'ice_x_0.npy', ice_x)
-np.save(path+'ice_y_0.npy', ice_y)
-np.save(path+'ice_z_0.npy', ice_z)
-
-t2 = time()
-print(t2-t1)
-#%%
-
-ice_x = np.load(path+'ice_x_0.npy')
-ice_y = np.load(path+'ice_y_0.npy')
-ice_z = np.load(path+'ice_z_0.npy')
-
 
 #%%
-# ax = plt.figure().add_subplot(projection='3d')
-
-# i = 15
-# ax.plot( ice_z[i], ice_x[i], ice_y[i], 'b.', label=i, markersize=1, alpha=0.5 )
-# i = 63
-# ax.plot( ice_z[i], ice_x[i], ice_y[i], 'r.', label=i, markersize=1, alpha=0.5 )
- 
-# ax.set_xlabel('z (mm)')
-# ax.set_ylabel('x (mm)')
-# ax.set_zlabel('y (mm)')
-# ax.set_box_aspect([1,1,1])
-# # plt.legend()
-# plt.show()
-
-# i = 0
-# plt.figure()
-# for j in range(18,20):
-#     plt.plot( ice_x[i][j*ny*2:(j+1)*ny*2], ice_y[i][j*ny*2:(j+1)*ny*2], '.', label=j )
-# plt.legend()
-# # plt.axis('equal')
-# plt.grid()
-# plt.show()
-
-i = 80
-plt.figure( )# figsize=(5,10))
-ss=  plt.scatter( ice_z[i], ice_y[i], c=ice_x[i], s=1 )
-plt.axis('equal')
-cbar = plt.colorbar(ss, location='top')
-# plt.xlim(-50,150)
-plt.xlabel(r'$x$ (mm)')
-plt.ylabel(r'$y$ (mm)')
-plt.title(r'$h$ (mm)',fontsize=12, pad=50)
-# plt.savefig('./Documents/prof4.png',dpi=200, bbox_inches='tight')
-plt.show()
-
-
-
-#%%
-# =============================================================================
-# New code
-# =============================================================================
 # testing cmaera down laser recognition
-i = 10000
+i = 20454
 disp = 0
 l = 0
 
@@ -774,13 +757,17 @@ filter_3 = 25 #np.nanstd(xii) * 3.
 dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i+disp)
 imo = np.array( dvids[l].read()[1] )[:,:,::-1]
 
+t1 = time()
 im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
-ili, smi, sma = laser_edges(im, sigma=20)
+# ili, smi, sma = laser_edges(im, sigma=20)
+ili, smi, sma = laser_edges_fast(im, sigma=20)
 if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
-
 fma = fit_wall_pixels(ili, sma)
-xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+
+# xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+xc, yc, zc, xi, yi = ice_boundary_fast(ili, smi, fma, wall_distance, cal_do, method='lm')
 zi = zc
+
 
 xii = pixel_filtering(xi, xc, ili, top_removal=False, filter_2=filter_2, filter_3=filter_3)
 
@@ -800,9 +787,8 @@ plt.show()
 # plt.show()
 
 #%%
-
-# testing cmaera down laser recognition
-i = 10000
+# testing cmaera up laser recognition
+i = 10200
 algo = 107
 l = 3
 
@@ -817,11 +803,13 @@ uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i+algo)
 imo = np.array( uvids[l].read()[1] )[:,:,::-1]
 
 im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
-ili, smi, sma = laser_edges(im, sigma=20)
+# ili, smi, sma = laser_edges(im, sigma=20)
+ili, smi, sma = laser_edges_fast(im, sigma=20)
 if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
-
 fma = fit_wall_pixels(ili, sma)
-xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+
+# xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+xc, yc, zc, xi, yi = ice_boundary_fast(ili, smi, fma, wall_distance, cal_up, method='lm')
 zi = zc
 
 xii = pixel_filtering(xi, xc, ili, top_removal=True, extra_tol=extra_tol, filter_1=filter_1, filter_2=filter_2, filter_3=filter_3)
@@ -843,7 +831,7 @@ plt.show()
 # plt.show()
 
 #%%
-
+# reconstruction
 t1 = time()
 
 ny,nx, _ = np.shape(dvids[0].read()[1])
@@ -853,7 +841,7 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
     nt = len(d_frame)
     gdo = f.create_group('Down')
 
-    gdo_t = gdo.create_dataset('time', (len(nt),), dtype='f') 
+    gdo_t = gdo.create_dataset('time', (nt,), dtype='f') 
     gdo_x = gdo.create_dataset('x', (nt,ny*N), dtype='f') 
     gdo_y = gdo.create_dataset('y', (nt,ny*N), dtype='f') 
     gdo_z = gdo.create_dataset('z', (nt,ny*N), dtype='f') 
@@ -863,36 +851,38 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
     filter_3 = 25 
 
     gdo_t[:] = d_time
-    for i in tqdm(range(nt)):
+    for i in tqdm(range(nt),disable=False):
         
         vid = dvids[d_vid[i]]
         ini = d_frame[i] - d_cuts[d_vid[i]]
         vid.set(cv2.CAP_PROP_POS_FRAMES, ini)
 
-        for j in range(N):
+        for j in tqdm(range(N),disable=True):
             
             imo = np.array( vid.read()[1] )[:,:,::-1]
             
             im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
-            ili, smi, sma = laser_edges(im, sigma=20)
+            # ili, smi, sma = laser_edges(im, sigma=20)
+            ili, smi, sma = laser_edges_fast(im, sigma=20)
             if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
-            
             fma = fit_wall_pixels(ili, sma)
-            xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+            
+            # xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_do, method='lm')
+            xc, yc, zc, xi, yi = ice_boundary_fast(ili, smi, fma, wall_distance, cal_do, method='lm')
             zi = zc
-            
+
             xii = pixel_filtering(xi, xc, ili, top_removal=False, filter_2=filter_2, filter_3=filter_3)
-            
-            gdo_x[i][j*ny:(j+1)*ny] = xii
-            gdo_y[i][j*ny:(j+1)*ny] = yi
-            gdo_z[i][j*ny:(j+1)*ny] = zi
-            
+
+            gdo_x[i,j*ny:(j+1)*ny] = xii
+            gdo_y[i,j*ny:(j+1)*ny] = yi
+            gdo_z[i,j*ny:(j+1)*ny] = zi    
+
             
     # Up
     nt = len(u_frame)
     gup = f.create_group('Up')
 
-    gup_t = gup.create_dataset('time', (len(nt),), dtype='f') 
+    gup_t = gup.create_dataset('time', (nt,), dtype='f') 
     gup_x = gup.create_dataset('x', (nt,ny*N), dtype='f') 
     gup_y = gup.create_dataset('y', (nt,ny*N), dtype='f') 
     gup_z = gup.create_dataset('z', (nt,ny*N), dtype='f') 
@@ -915,35 +905,37 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
             imo = np.array( vid.read()[1] )[:,:,::-1]
 
             im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
-            ili, smi, sma = laser_edges(im, sigma=20)
+            # ili, smi, sma = laser_edges(im, sigma=20)
+            ili, smi, sma = laser_edges_fast(im, sigma=20)
             if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
 
             fma = fit_wall_pixels(ili, sma)
-            xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+            # xc, yc, zc, xi, yi = ice_boundary(ili, smi, fma, wall_distance, cal_up, method='lm')
+            xc, yc, zc, xi, yi = ice_boundary_fast(ili, smi, fma, wall_distance, cal_up, method='lm')
             zi = zc
 
             xii = pixel_filtering(xi, xc, ili, top_removal=True, extra_tol=extra_tol, filter_1=filter_1, filter_2=filter_2, filter_3=filter_3)
 
-            gup_x[i][j*ny:(j+1)*ny] = xii
-            gup_y[i][j*ny:(j+1)*ny] = yi
-            gup_z[i][j*ny:(j+1)*ny] = zi    
+            gup_x[i,j*ny:(j+1)*ny] = xii
+            gup_y[i,j*ny:(j+1)*ny] = yi
+            gup_z[i,j*ny:(j+1)*ny] = zi    
 
 t2 = time()
 print(t2-t1)
 
 #%%
-
+# quick visualization of reconstruction
 with h5py.File(path + 'reconstructed_profile.hdf5', 'r') as f:
     
-    tg = f['Up/time'][:]
-    xg = f['Up/x'][:]
+    top_t = f['Up/time'][:]
+    top_x = f['Up/x'][:]
+    top_y = f['Up/y'][:]
+    top_z = f['Up/z'][:]
 
-    print(tg, xg)
-    
-    tg = f['Down/time'][:]
-    xg = f['Down/x'][:]
-
-    print(tg, xg)
+    dow_t = f['Down/time'][:]
+    dow_x = f['Down/x'][:]
+    dow_y = f['Down/y'][:]
+    dow_z = f['Down/z'][:]
 #%
 
 #%%
@@ -1078,26 +1070,26 @@ def get_median_angles(angles,stops,restarts):
 
 #%%
 
-# at 25 fps
+# at 24 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/25-12-12/'
+path = '/Volumes/Ice blocks/Scan water channel/25-12-12/' # this one has 60 fps
 
 bvids = [cv2.VideoCapture( path + 'Camera back/_DSC5072.MOV'), #starts 3886
-         cv2.VideoCapture( path + 'Camera back/_DSC5073.MOV'), #end 10060
-         ]
+          cv2.VideoCapture( path + 'Camera back/_DSC5073.MOV'), #end 10060
+          ]
 
 blens = [0]+[int(bvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(bvids))]
 
 #%%
 # Find led to get times
 
-l=0
-for i in range(3830,3850,1):
+l = 1
+for i in range(10058,10062,1):
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
-    im = np.array(bvids[l].read()[1])[350:400,1850:1895,::-1] #[150:2100,750:2800,::-1]
+    im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
+    # im = np.array(bvids[l].read()[1])[360:390,1860:1890,::-1] #[150:2100,750:2800,::-1]
     # im = np.array(bvids[l].read()[1])[:,:,::-1] #[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
-    im = im[:,:,0]
+    # im = im[:,:,0]
     # print(np.mean(im))
     
     plt.figure()
@@ -1106,6 +1098,7 @@ for i in range(3830,3850,1):
     # plt.title('{}, {:.2f}'.format(i,np.mean(im[:,:,0])))
     plt.title(i)
     plt.show()    
+
     print( i,'\t{:.2f}\t'.format(np.mean(im)), np.median(im) )
     
     # plt.figure()
@@ -1119,7 +1112,7 @@ for i in range(3830,3850,1):
 
 #%%
 
-b_led = [350,400,1850,1895] 
+b_led = [360,390,1860,1890] 
 
 b_mes = []
 
@@ -1144,66 +1137,32 @@ b_mes = np.array(b_mes)
 
 #%%
 
-threshold = [50]
+threshold = [140]
 plt.figure()
 plt.plot( b_mes , '.-')
 plt.hlines( threshold, 0, len(b_mes), color='g' )
 plt.grid()
 plt.show()
 
+missing_frames, _,_,_ = count_missing_frames_with_video_lengths( b_mes, blens, [start,blens[1]+end], fps=24, threshold=140, divisor=1 )
+
+missing_frames
 #%%
-# b_mes[:1500] = 0
 
-
-N = 1
-
-start = 3886
-end = 44632 # , np.sum(blens)
-
-interval_blink = 1441
-thres_blink = 50
-
-b_frame, b_vid, b_leds = frame_position(b_mes, blens, [3886, end], n_recons=N, divisor=2,
-                                        threshold=thres_blink, minute_interval=interval_blink)
-b_cuts = np.cumsum(blens)
-
-plt.figure()
-plt.plot( b_mes, '.-')
-plt.vlines( b_frame, 0, 80, colors='red')
-plt.vlines( b_cuts[:-1], 0, 80, colors='k', alpha=0.5)
-plt.grid()
-plt.show()
-
-
-dt = 60/interval_blink
-temp = (np.arange(0,len(b_mes)) - start) * dt
-intervals = np.abs(np.diff(b_leds) - interval_blink)
-
-plt.figure()
-plt.plot( temp, '-' )
-
-jumps = np.where( intervals>3 )[0]
-jumpb = b_vid[np.isin(b_frame, b_leds[jumps+1])]
-for l in range(len(jumpb)):
-    temp[ np.cumsum(blens)[jumpb[l]]: ] += intervals[jumps]*dt
-    
-    
-plt.plot( temp, '-' )
-plt.grid()
-plt.show()
+#calculate time using missing_frames
 
 # np.save(path+'/back_times.npy', temp)
 
 #%%
 # Finding angle of handle
 
-l=0
-for i in range(0,34000,3000):
-# for i in [3000]:
+l=1
+for i in range(0,10001,5000):
+# for i in [30000]:
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
-    # im = np.array(bvids[l].read()[1]) [50:1050,500:1600,::-1]
-    im = np.array(bvids[l].read()[1]) [50:1050,500:1600,1]
+    # im = np.array(bvids[l].read()[1])[:,:,::-1] 
+    im = np.array(bvids[l].read()[1]) [100:1030,550:1550,::-1]
+    # im = np.array(bvids[l].read()[1]) [50:1100,350:1400,2]
     
     plt.figure()
     plt.imshow(im)
@@ -1217,15 +1176,16 @@ for i in range(0,34000,3000):
 
 #%%
 # l = 0
-blims = [50,1050,500,1600]
+blims = [100,1030,550,1550]
+# blims = [50,1100,350,1400]
 
 pos = []
 
 # for i in [7000,13000,19000,22000,28000,37000,40000]:
-for i,l in zip([6000,12000,18000,21000,24000,27000,33000],[0,0,0,0,0,0,0]):
+for i,l in zip([5000,10000,15000,25000,30000,0,5000],[0,0,0,0,0,1,1]):
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
     im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
-    im = normalize( gaussian( im[:,:,1], 2) )
+    im = normalize( gaussian( im[:,:,0], 2) )
 
     pos.append(pick_points_on_figure(im, i))
     
@@ -1234,14 +1194,15 @@ fil, fit_val = circle_filter(pos, im)
 
 fit_val
 #%%
+# fit_val = [520.38439706, 523.98264292, 444.35461342]
 
 l=0
 # for i in range(0,34000,3000):
-for i in [33000]:
+for i in [13000]:
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
     # im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
     # im = np.array(bvids[l].read()[1]) [50:1050,500:1600,::-1]
-    im = np.array(bvids[l].read()[1]) [50:1050,500:1600,1]
+    im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],2]
     
     plt.figure()
     plt.imshow(im * fil)
@@ -1250,15 +1211,18 @@ for i in [33000]:
 #%%
 
 start = 3886
+end = 10060
 # end = 44632 # , np.sum(blens)
-end = 9000
+
+starts = [3886,0]
+ends = [blens[1],10060]
 
 nfil = ~fil
 
 t1 = time()
 
 ratio = 0.7
-bvids[0].set(cv2.CAP_PROP_POS_FRAMES, 0)
+bvids[0].set(cv2.CAP_PROP_POS_FRAMES, starts[0])
 im = np.array(bvids[0].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
 # im = im[:,:,2]    
 # im = normalize( gaussian( im[:,:,1], 4) )
@@ -1269,22 +1233,24 @@ ny,nx = np.shape(im)
 xxx,yyy = np.meshgrid( np.arange(nx), np.arange(ny) ) 
 angs = np.arctan2( -(yyy-cy), xxx-cx )
 
-angl = angle_dot(im, ~fil, fit_val, angs, 0, [0,0] , threshold=0.3, sizes=[80,350], ang_tol=1/2, ecc_thres=0.7 )
+angl = angle_dot(im, ~fil, fit_val, angs, 0, [840,330] , threshold=0.3, sizes=[80,350], ang_tol=1/2, ecc_thres=0.7 )
 cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl)
 
 print(angl, cxa,cya)
 
-tot_angles = []
+tot_angles, vidi = [], []
 
-finish, counter = False, 0
+finish = False
 for l in range(len(bvids)):
-    # start,end = starts[l], ends[l]
+    counter = 0
+    start,end = starts[l], ends[l]
     
-    # N_total = end-start
+    N_total = end-start
     angles = np.zeros(blens[l+1])
-    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0 )
+    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, start )
 
-    for i in tqdm(range(blens[l+1])):
+    # for i in tqdm(range(blens[l+1])):
+    for i in tqdm(range(N_total)):
         # counter = np.searchsorted(restarts[l], i)
         counter += 1
         if counter == end: 
@@ -1292,14 +1258,34 @@ for l in range(len(bvids)):
             break
         
         im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
-        # im = im[:,:,2]    
-        # im = normalize( gaussian( im[:,:,1], 4) )
         im = normalize( gaussian( im[:,:,1]* ratio + im[:,:,2]* (1-ratio) , 3) )
         
-        angl = angle_dot(im, nfil, fit_val, angs, angl, [cya,cxa] , threshold=0.3, sizes=[80,350], ang_tol=8, ecc_thres=0.7 )
+        ang_ini = angl
+        threshold= 0.3
+        sizes=[80,350]
+        ecc_thres = 0.8 #1
+        min_dist = 20000
+        ang_tol = 8
+        
+        if angl > 0: threshold = 0.2
+        
+        if l == 0:
+            if -2.1 < angl < -1.5: threshold = 0.35   #works for everything in vid 1
+
+        elif l == 1:
+            if -2.1 < angl < -1.5: threshold = 0.3   #try second vid
+            if i in [63141, 63142, 63143]: threshold = 0.2 # 63141, 63142, 63143
+            if i in [63144, 63145, 63146, 63147, 63148]: threshold = 0.25 # 63144, 63145, 63146, 63147, 63148
+
+        
+        
+        # angl = angle_dot(im, nfil, fit_val, angs, angl, [cya,cxa] , threshold=0.3, sizes=[80,350], ang_tol=8, ecc_thres=0.7 )
+        angl = angle_dot(im, ~fil, fit_val, angs, angl, [cya,cxa],  threshold=threshold, sizes=sizes, ang_tol=ang_tol, ecc_thres=ecc_thres  )
 
         angles[i] = angl
         cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl)
+        
+        vidi.append(l)
 
     tot_angles.append( angles )
     
@@ -1307,17 +1293,43 @@ for l in range(len(bvids)):
     
 
 tot_angles = np.hstack(tot_angles)
+vidi = np.array(vidi).astype('int')
+
+frames_b = np.hstack([[0],np.cumsum(missing_frames)])
+times_b = ( np.arange(len(vidi)) + frames_b[vidi] ) / 60
+
 # cuts = np.cumsum(ends-starts)
 # bvideo = np.searchsorted(cuts, np.arange(68576), side='right')
 
 t2 = time()
 print(t2-t1)
 
-np.save(path+'/angles(not_added).npy', tot_angles)
+#%%
+# # np.save(path+'/angles(not_added).npy', tot_angles)
+# np.save(path+'back_angles.npy', tot_angles)
+# np.save(path+'back_times.npy', times_b)
+
+
+# #%%
+# ttt = np.load( path+'back_times.npy' )
+# aaa = np.load( path+'back_angles.npy' )
+# aab = aaa[aaa!=0]
+
+# backpos = np.unwrap(aab - aab[0]) * 2.5/(2*np.pi)
+
+# plt.figure()
+# # plt.plot(aaa==0)
+# # plt.plot( np.unwrap(aab - aab[0]) / (2*np.pi) )#* 2.5/(2*np.pi) )
+# plt.plot(ttt, backpos, '.-' )
+# # plt.plot( aab )#* 2.5/(2*np.pi) )
+# plt.grid()
+# plt.show()
+
+# np.savez(path+'back_position.npz', time=ttt, position=backpos)
 
 #%%
 l = 0
-i0 = 9724
+i0 = 7064
 bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i0)
 im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
 # im = im[:,:,1]    
@@ -1330,7 +1342,7 @@ ny,nx = np.shape(im)
 xxx,yyy = np.meshgrid( np.arange(nx), np.arange(ny) ) 
 angs = np.arctan2( -(yyy-cy), xxx-cx )
 
-angl = angle_dot(im, ~fil, fit_val, angs, 0, [0,0],  threshold=0.4, sizes=[80,350], ang_tol=1/2, ecc_thres=0.77 )
+angl = angle_dot(im, ~fil, fit_val, angs, 0, [0,0],  threshold=0.3, sizes=[80,350], ang_tol=1/2, ecc_thres=0.8 )
 cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl) 
 print(angl)
 
@@ -1340,10 +1352,10 @@ imt[~fil] = 0
         
 angs_arr = angs
 ang_ini = 0
-ang_tol=1/2
+ang_tol = 12
 c_ini = [0,0]
-sizes=[100,1000]
-ecc_thres=0.7
+sizes=[80,350]
+ecc_thres=0.8
 threshold=0.3
 
 angs_rotated = (angs_arr - ang_ini + 1*np.pi) % (2 * np.pi) - np.pi
@@ -1363,15 +1375,17 @@ plt.plot( cxa,cya, 'r.' )
 plt.title(i0)
 plt.show()
 
-plt.figure()
-plt.imshow( la )
-plt.plot( cxa,cya, 'r.' )
-plt.colorbar()
-plt.title(i0)
-plt.show()
+# plt.figure()
+# plt.imshow( la )
+# plt.plot( cxa,cya, 'r.' )
+# plt.colorbar()
+# plt.title(i0)
+# plt.show()
 
 #%%
-i0 = 9893 #9893 #9737
+# i0 = 3886 + 5800 + 1000 + 3200 + 490 + 3950 + 400 + 3960 + 370 + 3540 + 780 + 5510
+i0 = 2500 + 5690
+l = 1
 
 ratio = 0.7
 bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i0)
@@ -1383,63 +1397,150 @@ cx,cy,r = fit_val
 ny,nx = np.shape(im)
 xxx,yyy = np.meshgrid( np.arange(nx), np.arange(ny) ) 
 angs = np.arctan2( -(yyy-cy), xxx-cx )
-angl = angle_dot(im, ~fil, fit_val, angs, 0, [0,0],  threshold=0.4, sizes=[80,350], ang_tol=1/2, ecc_thres=0.77 )
+# angl = angle_dot(im, ~fil, fit_val, angs, 0, [840,330],  threshold=0.3, sizes=[80,350], ang_tol=1/2, ecc_thres=0.8 )
+angl = angle_dot(im, ~fil, fit_val, angs, 0, [740,120],  threshold=0.3, sizes=[80,350], ang_tol=1/2, ecc_thres=0.8 )
 cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl) 
 
-# print(angl)
+print(angl)
 # plt.figure()
 # plt.imshow( im )
 # plt.plot( cxa,cya, 'r.' )
 # plt.title(i0)
 # plt.show()
-
-
-ang_tol1 = 12
-ang_tol2 = 12
+# # %%
 
 detailed = 1
 
 cccc = []
+bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i0)    
 # for i in range(16161,16260):
 # for i in [i0+1]:
-for i in tqdm(range(0,138,1), disable=False ):
+for i in tqdm(range(0,1870,1), disable=False ):
 
-    bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i0 + i)    
+    # bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i0 + i)    
     im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
     # im = im[:,:,2]    
     # im = normalize( gaussian( im[:,:,1], 4) )
     im = normalize( gaussian( im[:,:,1]* ratio + im[:,:,2]* (1-ratio) , 3) )
-    
+        
     if 1-detailed: 
 
-        threshold= 0.4
+        ang_ini = angl
+        threshold= 0.3
         sizes=[80,350]
-        ecc_thres = 0.77 #1
+        ecc_thres = 0.8 #1
         min_dist = 20000
-        ang_tol = 12
-               
-        if i0+i in [9740]: ecc_thres = 0.78 # 9740
-        if i0+i in [9742]: sizes = [80,450] # 9742
-        if i0+i in [9758,9759,9760]: ang_tol = 8 # 9758,9759,9760
-        
-        angl = angle_dot(im, ~fil, fit_val, angs, angl, [cya,cxa],  threshold=0.4, sizes=sizes, ang_tol=ang_tol, ecc_thres=ecc_thres  )
+        ang_tol = 8               
 
+        # if i0+i in [9740]: ecc_thres = 0.78 # 9740
+        # if i0+i in [9742]: sizes = [80,450] # 9742
+        # if i0+i in [9758,9759,9760]: ang_tol = 8 # 9758,9759,9760
+        
+        angl = angle_dot(im, ~fil, fit_val, angs, angl, [cya,cxa],  threshold=threshold, sizes=sizes, ang_tol=ang_tol, ecc_thres=ecc_thres  )
+
+        cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl) 
         cccc.append(angl)
     
     if detailed: 
         ang_ini = angl
-        threshold= 0.4
-        sizes=[80,350]
-        ecc_thres = 0.77 #1
+        threshold = 0.3
+        # sizes = [80,350]
+        sizes = [210,500]
+        ecc_thres = 0.8 #1
         min_dist = 20000
-        ang_tol = 12
+        ang_tol = 8
         
-        if i in [8,9,10,24,40]: threshold,ang_tol  = 0.3, 8 # 9901,9902,9903,9917
-        if i in [37,38]: sizes,ecc_thres = [120,350], 0.9 # 9930,9931 
-        if i in [40]: sizes,ang_tol = [120,550], 8 # 9933
-        if i in [68,69]: ecc_thres = 0.81 # 9961,9962
-        if i in [119,120,121]: ang_tol = 8 # 10012,10013,10014
-        if i in [136,137,138]: sizes,ecc_thres,threshold,ang_tol = [120,350], 0.91, 0.3, 8 # problem here
+        # starting 3886 + 5800
+        # if i in [71,72,73,74]: sizes, ecc_thres = [80,500], 0.94
+        # elif i in [90,91,92,93,94,95,96]: sizes, ecc_thres = [230,500], 0.9
+        # elif i in [200,201]: sizes, ecc_thres = [270,500], 0.7
+        # elif i in [244,245]: sizes, ecc_thres = [120,400], 0.9
+        # elif i in [246,247]: sizes, ecc_thres = [120,600], 0.92
+        # elif i in [295,296]: sizes, ecc_thres = [200,600], 0.92
+        # elif i in [307]: sizes, ecc_thres = [240,600], 0.92
+        # elif i in [341,342]: sizes, ecc_thres = [300,600], 0.92
+        # elif i in [343,344,345,346]: sizes, ecc_thres = [401,600], 0.92
+        # elif i in [372,373,374,375]: sizes, ecc_thres = [401,600], 0.89
+        # elif i in [376,377]: sizes, ecc_thres = [340,600], 0.89
+        # elif i in [404,405]: sizes, ecc_thres = [270,600], 0.91
+        # elif i in [406,407]: sizes, ecc_thres = [285,360], 0.93
+        # elif i in [451,452]: sizes, ecc_thres = [320,600], 0.9
+        # elif i in [466]: sizes, ecc_thres = [320,550], 0.9
+        # elif i in [479,480]: sizes, ecc_thres = [320,550], 0.9
+        # elif i in [495,496,497]: sizes, ecc_thres = [230,550], 0.9
+        # elif i in [526,527,528]: sizes, ecc_thres = [230,550], 0.9
+        # elif i in [573]: sizes, ecc_thres = [230,550], 0.9
+        # elif i in [590,591]: sizes, ecc_thres = [240,550], 0.9
+        # elif i in [650,651]: sizes, ecc_thres = [300,560], 0.9
+        # elif i in [682]: sizes, ecc_thres = [290,560], 0.9
+        # elif i in [683,684,685,686]: sizes, ecc_thres = [200,250], 0.9
+        # elif i in [743,744]: sizes, ecc_thres = [450,600], 0.9
+        # elif i in [772,773,774]: sizes, ecc_thres = [300,500], 0.9
+        # elif i in [787,788]: sizes, ecc_thres = [200,500], 0.75
+        # elif i in [789]: sizes, ecc_thres = [210,500], 0.9
+        # elif i in [828]: sizes, ecc_thres = [300,400], 0.9
+        # elif i in [829]: sizes, ecc_thres = [400,500], 0.9
+        # elif i in [880,881]: sizes, ecc_thres = [280,500], 0.9
+        # elif i in [912,913]: sizes, ecc_thres = [300,500], 0.9
+        # elif i in [931,932,933,934,935,935,936,937,938,939,940]: sizes, ecc_thres = [200,500], 0.9
+        
+        # #starting 3886 + 5800 + 1000 + 3200
+        # if i in [159,160,161,175,192,219,267,268,269,270,300,301,318,349,379,380,433,435,464,465,466]: sizes, ecc_thres = [270,500], 0.94
+        # elif i in [189]: sizes, ecc_thres = [420,460], 0.9
+        # elif i in [190]: sizes, ecc_thres = [420,560], 0.92
+        # elif i in [191]: sizes, ecc_thres = [1140,1150], 0.95
+        # elif i in [204]: sizes, ecc_thres = [600,700], 0.9
+        # elif i in [220,221]: sizes, ecc_thres = [200,450], 0.9
+        # elif i in [235,236,319]: sizes, ecc_thres = [290,400], 0.91
+        # elif i in [351]: sizes, ecc_thres = [400,550], 0.83
+        # elif i in [381]: threshold, sizes = 0.32, [200,400]
+        # elif i in [398]: sizes, ecc_thres = [283,400], 0.94
+        # elif i in [399]: sizes, ecc_thres = [200,280], 0.94
+        # elif i in [413,414]: sizes, ecc_thres = [100,300], 0.94
+        # elif i in [434]: sizes, ecc_thres = [380,390], 0.94
+    
+        # # #starting 3886 + 5800 + 1000 + 3200 + 490 + 3950
+        # if i in [39,40,41,116,145,195,196,228,282,382]: sizes, ecc_thres = [250,500], 0.94
+        # elif i in [72,75]: sizes, ecc_thres = [300,450], 0.9
+        # elif i in [86,87,88]: sizes, ecc_thres = [300,600], 0.9
+        # elif i in [148]: sizes, ecc_thres = [400,500], 0.9
+        # elif i in [229]: sizes, ecc_thres = [351,360], 0.9
+        # elif i in [283,284]: sizes, ecc_thres = [200,400], 0.73
+        # elif i in [383]: sizes, ecc_thres = [234,400], 0.9
+        
+        # # # #starting 3886 + 5800 + 1000 + 3200 + 490 + 3950 + 400 + 3960
+        # if i in [86,87,88,156,252,253,294,340]: sizes, ecc_thres = [270,500], 0.94
+        # elif i in [127,128,129,130,207,296,307,309,308,310]: sizes, ecc_thres = [400,600], 0.9
+        # elif i in [143]: threshold, sizes = 0.32, [200,400]
+        # elif i in [158,159,172]: sizes, ecc_thres = [200,240], 0.9
+        # elif i in [190]: sizes, ecc_thres = [200,400], 0.9
+        # elif i in [338]: sizes, ecc_thres = [250,260], 0.9
+        # elif i in [339]: sizes, ecc_thres = [270,280], 0.9
+        
+        # # #starting 3886 + 5800 + 1000 + 3200 + 490 + 3950 + 400 + 3960 + 370 + 3540 + 780 + 5510
+        # if i in [57,222,265,364,377,378,412]: sizes, ecc_thres = [270,500], 0.94
+        # elif i in [20]: sizes, ecc_thres = [240,500], 0.9
+        # elif i in [38,39]: sizes, ecc_thres = [240,380], 0.9
+        # elif i in [121,122]: sizes, ecc_thres = [210,240], 0.9
+        # elif i in [177,178]: sizes, ecc_thres = [450,520], 0.9
+        # elif i in [223]: threshold = 0.25
+        # elif i in [266]: sizes, ecc_thres = [400,600], 0.9
+        # elif i in [311,413]: sizes, ecc_thres = [260,600], 0.9
+        # elif i in [314]: sizes, ecc_thres = [250,600], 0.9
+        # elif i in [315]: sizes, ecc_thres = [220,230], 0.9
+        
+        # # # #starting second video: 2500
+        # if i in [82,83,150,151,307,308]: sizes, ecc_thres = [270,500], 0.94
+        # elif i in [108]: sizes, ecc_thres = [420,450], 0.9
+        # elif i in [109,181,182,260,261,353]: sizes, ecc_thres = [400,600], 0.92
+        # elif i in [110]: sizes, ecc_thres = [700,800], 0.92
+        # elif i in [111]: sizes, ecc_thres = [560,600], 0.92
+        # elif i in [226,227]: sizes, ecc_thres = [241,251], 0.92
+        # elif i in [239]: sizes, ecc_thres = [200,300], 0.92
+
+        # # #starting second video: 2500 + 5690
+        if i in [51,52]: sizes, ecc_thres = [270,500], 0.94
+        # elif i in [108]: sizes, ecc_thres = [420,450], 0.9
 
         
         cx,cy,r = fit_val
@@ -1456,9 +1557,11 @@ for i in tqdm(range(0,138,1), disable=False ):
         ecc_fil = dict_prop['eccentricity'] < ecc_thres
         dist = (dict_prop['centroid-0']-cya)**2 + (dict_prop['centroid-1']-cxa)**2  
         
+        # if i in [51,52,53]: print('\n',i,dict_prop)
+        
         wight = (1-area_fil*1)*50 + (1-ecc_fil*1)*50 + dist.argsort().argsort()
         
-        dot = np.argmin( wight  )
+        dot = np.argmin( wight )
             
         dotc[0] = dict_prop['centroid-0'][ dot ]
         dotc[1] = dict_prop['centroid-1'][ dot ]
@@ -1467,16 +1570,13 @@ for i in tqdm(range(0,138,1), disable=False ):
         cxa, cya = r*np.cos(angl)+cx, cy-r*np.sin(angl) 
         cccc.append(angl)
             
-        # print(angl, end=' ')
         
-        # print(angl, ang_ini)
-        
-        # if i == 89 :
-        # if i%4 == 0 :
-        if i >= 137:
-        # if (i >= 14) & (i <= 21):
+        # if i == 353 :
+        # if i%400 == 0:
+        # if i >= 90:
+        if (i >= 90) & (i%100==0):
             plt.figure()
-            # plt.imshow( la )
+            plt.imshow( la )
             # plt.imshow( im )
             plt.imshow( imt )
             # plt.plot( dotc[1], dotc[0], 'r.' )
@@ -1497,9 +1597,34 @@ plt.plot( cccc,'.-')
 plt.grid()
 plt.show()
 
+np.save(path+'back_angles_1(15).npy', np.array(cccc))
+
 
 #%%
 
+angs1, angs2 = [], []
+for i in range(1,13): angs1.append( np.load( path+f'back_angles({i}).npy' ) )
+for i in range(13,16): angs2.append( np.load( path+f'back_angles_1({i}).npy' ) )
+
+angs1, angs2 = np.hstack( angs1 ), np.hstack( angs2 )
+t1, t2 = np.arange( len(angs1) ) / 24,  np.arange( len(angs2) ) / 24
+t2 = t2 + t1[-1] + 55/24
+
+t_tot = np.hstack( [t1,t2] )
+ang_tot = np.hstack( [angs1, angs2] )
+
+backpos = (np.unwrap( ang_tot ) - ang_tot[0] ) /(2*np.pi) * 2.5
+
+plt.figure()
+plt.plot( t1, angs1 )
+plt.plot( t2, angs2 )
+# plt.plot( t_tot, ang_tot, '--')
+plt.plot( t_tot, backpos )
+plt.show()
+
+# np.savez(path+'back_position.npz', time=t_tot, position=backpos)
+
+#%%
 l = 0
 i0 = 9856 
 
