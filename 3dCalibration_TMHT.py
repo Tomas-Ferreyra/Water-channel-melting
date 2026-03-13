@@ -61,7 +61,7 @@ def image_position(frames, vids, lengths):
     ims = []
     for i in tqdm(range(len(frames))):
         ima = np.zeros((ny, nx))
-        for j in range(-59, 1):
+        for j in range(-59, 1):            
             im = np.array(vids[nv[i] * ((truframes[i] + j) > -1)].get_data(
                 truframes[i] + j + lengths[0] * ((truframes[i] + j) < 0)))
             imn = 0.3 * im[:, :, 0] + 0.7 * im[:, :, 1]
@@ -167,6 +167,8 @@ def find_indices(points, known, eps=0.25, lim_ind=[-1e5, 1e5, -1e5, 1e5], gps=[1
         DESCRIPTION. The default is 0.25.
     lim_ind : list length 4, optional
         min and max indices for [left,right,bottom,top]
+    gps : [±1,±1]
+        Direction the first and/or second point (for starting grid) is going
     Returns
     -------
     (M,2)-array
@@ -458,19 +460,19 @@ def pick_points_on_figure(x, y, im, fig_num, max_picks=3):
 # Angles for calibration
 # =============================================================================
 t1 = time()
-path = '/Volumes/Ice blocks/Scan water channel/25-11-17/'
-im1 = imageio.imread(path + 'Camera back/DSC_1743.NEF')
+path = '/Volumes/Ice blocks/Scan water channel/26-02-17/'
+im1 = imageio.imread(path + 'Camera back/DSC_5167.NEF')
 # im2 = imageio.imread('/Volumes/Ice blocks/Scan water channel/25-09-29/Camera back/DSC_0448.NEF')
 
 t2 = time()
 t2-t1
 #%%
 
-xc = np.linspace(3536, 3505, 10)
-yc, mc = get_line(3536, 3505, 20, 4250, xc)
+xc = np.linspace(3391, 3379, 10)
+yc, mc = get_line(3391, 3379, 0, 2500, xc)
 
-xd = np.linspace(4308, 4304, 10)
-yd, md = get_line(4308, 4304, 20, 4300, xd)
+xd = np.linspace(3863, 3812, 10)
+yd, md = get_line(3863, 3813, 0, 2400, xd)
 
 plt.figure()
 plt.imshow(im1[:, :, :])
@@ -509,36 +511,38 @@ print(np.arctan(np.abs((mc-md)/(1+mc*md))), 'rad')
 t1 = time()
 
 # Import videos
-path = '/Volumes/Ice blocks/Scan water channel/25-11-17/'
-vidd1 = imageio.get_reader( path + 'Camera down/DSC_0485.MOV', 'ffmpeg')  # 8055 frames
-vidd2 = imageio.get_reader( path + 'Camera down/DSC_0486.MOV', 'ffmpeg')  # 8085 frames
-vidd3 = imageio.get_reader( path + 'Camera down/DSC_0487.MOV', 'ffmpeg')  # 3150 frames
+path = '/Volumes/Ice blocks/Scan water channel/26-02-17/'
+vidd1 = imageio.get_reader( path + 'Camera down/DSC_8620.MOV', 'ffmpeg')  # 8025 frames ,start 1500
+vidd2 = imageio.get_reader( path + 'Camera down/DSC_8621.MOV', 'ffmpeg')  # 8010 frames
+vidd3 = imageio.get_reader( path + 'Camera down/DSC_8622.MOV', 'ffmpeg')  # 429 frames
 
 
-vidu1 = imageio.get_reader( path + 'Camera up/DSC_3738.MOV', 'ffmpeg')  # 7056 frames
-vidu2 = imageio.get_reader( path + 'Camera up/DSC_3739.MOV', 'ffmpeg')  # 7080 frames
-vidu3 = imageio.get_reader( path + 'Camera up/DSC_3740.MOV', 'ffmpeg')  # 1377 frames
+vidu1 = imageio.get_reader( path + 'Camera up/DSC_0006.MOV', 'ffmpeg')  # 8145 frames ,start 1500
+vidu2 = imageio.get_reader( path + 'Camera up/DSC_0007.MOV', 'ffmpeg')  # 8160 frames
+vidu3 = imageio.get_reader( path + 'Camera up/DSC_0008.MOV', 'ffmpeg')  # 228 frames
 
 ny, nx, _ = np.shape(vidd1.get_data(0))
 
 # Get background images for down and up (bottom and top camera respectively)
-backd = np.array(vidd3.get_data(3140))
+backd = np.array(vidd3.get_data(10))
 backd = 0.3 * backd[:, :, 0] + 0.7 * backd[:, :, 1]
-backu = np.array(vidu3.get_data(1300))
+backu = np.array(vidu3.get_data(10))
 backu = 0.3 * backu[:, :, 0] + 0.7 * backu[:, :, 1]
 
 t2 = time()
 print(t2-t1)
 
-# vidd1.count_frames(), vidd2.count_frames(), vidd3.count_frames(), vidu1.count_frames(), vidu2.count_frames(), vidu3.count_frames()
+# vidd1.count_frames(), vidd2.count_frames(), vidd3.count_frames(), vidu1.count_frames(),  vidu2.count_frames(), vidu3.count_frames()
 
 #%%
 plt.figure()
-plt.imshow( normalize( backd[:,700:1800] ) )
+# plt.imshow( normalize( backd[:,1500:2700] ) )
+plt.imshow( normalize( backd[:,:] ) )
 plt.colorbar()
 plt.show()
 plt.figure()
-plt.imshow( backu[:,800:1950] )
+# plt.imshow( backu[:,1400:2600] )
+plt.imshow( backu[:,:] )
 plt.colorbar()
 plt.show()
 
@@ -547,7 +551,7 @@ plt.show()
 
 cutoff = -80
 vid, back, n_frames = vidd1, backd, 8055
-interval=10; in_frame=0; lims=[None, None, 700, 1800]
+interval=10; in_frame=0; lims=[None, None, 1500, 2700]
 
 xmed, ymed, ies = [], [], []
 # for i in tqdm(range(in_frame, n_frames, interval)):
@@ -572,16 +576,16 @@ for i in [0,3000,6000]:
 t1 = time()
 
 # Find frames when grid starts moving. We'll take the frames before those for grid z-positions
-limsd = [None, None, 700, 1800]
-xmedd1, ymedd1, iesd1 = position_grid( vidd1, backd, -80, 8055, in_frame=0, lims=limsd)
-xmedd2, ymedd2, iesd2 = position_grid( vidd2, backd, -80, 8085, in_frame=0, lims=limsd)
-iesd2 += 8055
+limsd = [None, None, 1500, 2700]
+xmedd1, ymedd1, iesd1 = position_grid( vidd1, backd, -80, 8025, in_frame=1500, lims=limsd)
+xmedd2, ymedd2, iesd2 = position_grid( vidd2, backd, -80, 8010, in_frame=0, lims=limsd)
+iesd2 += 8025
 xmd, ymd, ied = np.hstack((xmedd1, xmedd2)), np.hstack((ymedd1, ymedd2)), np.hstack((iesd1, iesd2))
 
-limsu = [None, None, 800, 1950]
-xmedu1, ymedu1, iesu1 = position_grid( vidu1, backu, -100, 7056, in_frame=0, lims=limsu)
-xmedu2, ymedu2, iesu2 = position_grid( vidu2, backu, -100, 7080, in_frame=0, lims=limsu)
-iesu2 += 7056
+limsu = [None, None, 1400, 2600]
+xmedu1, ymedu1, iesu1 = position_grid( vidu1, backu, -80, 8145, in_frame=1500, lims=limsu)
+xmedu2, ymedu2, iesu2 = position_grid( vidu2, backu, -80, 8160, in_frame=0, lims=limsu)
+iesu2 += 8145
 xmu, ymu, ieu = np.hstack((xmedu1, xmedu2)), np.hstack((ymedu1, ymedu2)), np.hstack((iesu1, iesu2))
 
 N_positions = 15
@@ -600,25 +604,44 @@ print(t2-t1)
 
 #%%
 N_positions = 15
-limsd = [None, None, 700, 1800]
-limsu = [None, None, 800, 1950]
+limsd = [None, None, 1500, 2700]
+limsu = [None, None, 1400, 2600]
 
-framesd = np.array([  750,  1710,  2390,  3000,  3740,  4300,  4790,  5520,  6180,  7010,  7610,  8515,  9445, 10365, 12455])
+framesd = np.array([ 1780,  2450,  3300,  4020,  4750,  5530,  6130,  6730,  7300, 7940,  8315,  9035,  9965, 10835, 11565])
 
-framesu = np.array([  630,  1410,  1950,  2440,  3030,  3480,  3870,  4450,  4980,  5650,  6120,  6850,  7586,  8326, 10006])
+
+framesu = np.array([ 1810,  2470,  3330,  4040,  4770,  5550,  6160,  6760,  7320, 7960,  8345,  9065,  9995, 10865, 11595])
 
 # Get images for all grid z positions
-imd = image_position(framesd, [vidd1, vidd2], [8055, 8085])
-imu = image_position(framesu, [vidu1, vidu2], [7056, 7080])
+imd = image_position(framesd, [vidd1, vidd2], [8025-1, 4707])
+imu = image_position(framesu, [vidu1, vidu2], [8145-1, 4776])
+
 
 #%%
-for i in range(1):
-    plt.figure()
-    plt.imshow(imd[i])
-    plt.show()
-    plt.figure()
-    plt.imshow(imu[i])
-    plt.show()
+# for i in range(1):
+# for i in [0,13]:
+#     plt.figure()
+#     plt.imshow(imd[i])
+#     plt.show()
+#     plt.figure()
+#     plt.imshow(imu[i])
+#     plt.show()
+
+# for i in range(15):
+for i in [13,14]:
+    # imb = (imu[i]-backu)[limsu[0]:limsu[1], limsu[2]:limsu[3]]
+    # g1, pp, tt = get_points(imb, tol_f=0.005, tol_ga=0.2)    
+
+    imb = (imd[i]-backd)[limsd[0]:limsd[1], limsd[2]:limsd[3]]
+    g1, pp, tt = get_points(imb, tol_f=0.008, tol_ga=0.3)  
+
+    points = pick_points_on_figure(pp[:,0], pp[:,1], imb, i)  
+    print(i, points)
+    
+#     plt.figure()
+#     plt.imshow(imb, cmap='gray')
+#     plt.plot( pp[:,0], pp[:,1],'.' )
+#     plt.show()
 
 #%%
 # Clicking points on the image that will act as starting base for grid index algorithm
@@ -628,7 +651,7 @@ picked_points_d = {}
 for i in range(N_positions):
 # for i in [0,13]:
     imb = (imu[i]-backu)[limsu[0]:limsu[1], limsu[2]:limsu[3]]
-    g1, pp, tt = get_points(imb, tol_f=0.006, tol_ga=0.2)    
+    g1, pp, tt = get_points(imb, tol_f=0.005, tol_ga=0.2)    
     points = pick_points_on_figure(pp[:,0], pp[:,1], imb, i)
     picked_points_u[i] = points
 
@@ -649,27 +672,34 @@ print(picked_points_d)
 
 # Check whether grid indices are properly being calculated
 
-knownsu = {0: [1353, 1351, 1327], 1: [1355, 1353, 1329], 2: [1359, 1357, 1332], 3: [1362, 1363, 1336], 4: [1362, 1363, 1337], 5: [1367, 1366, 1341], 6: [1369, 1367, 1342], 
-           7: [1372, 1370, 1346], 8: [1374, 1373, 1347], 9: [1376, 1375, 1350], 10: [1378, 1376, 1351], 11: [1379, 1377, 1352], 12: [1381, 1379, 1355], 13: [1382, 1380, 1355], 
-           14: [1385, 1383, 1359]}
+knownsu = {0: [1207, 1205, 1180], 1: [1242, 1240, 1215], 2: [1254, 1251, 1227], 3: [1258, 1256, 1231], 4: [1256, 1254, 1229], 5: [1254, 1252, 1227], 
+           6: [1251, 1249, 1224], 7: [1254, 1252, 1227], 8: [1250, 1248, 1223], 9: [1249, 1247, 1222], 10: [1251, 1250, 1224], 11: [1250, 1248, 1223], 
+           12: [1248, 1246, 1221], 13: [1254, 1252, 1228], 14: [1250, 1248, 1223]}
 
-knownsd = {0: [38, 39, 12], 1: [40, 41, 14], 2: [42, 43, 16], 3: [45, 46, 19], 4: [47, 48, 21], 5: [50, 51, 24], 6: [52, 53, 26], 7: [52, 53, 26], 8: [53, 54, 27], 
-           9: [56, 57, 30], 10: [59, 60, 33], 11: [60, 61, 34], 12: [63, 64, 37], 13: [65, 66, 39], 14: [68, 69, 42]}
+
+knownsd = {0: [28, 30, 55], 1: [32, 33, 58], 2: [35, 37, 62], 3: [39, 41, 66], 4: [43, 45, 70], 5: [49, 51, 76], 6: [54, 56, 81], 7: [57, 60, 84],
+           8: [61, 63, 88], 9: [65, 67, 92], 10: [67, 69, 94], 11: [73, 75, 100], 12: [81, 83, 108], 13: [83, 85, 110], 14: [87, 89, 114]}
 
 # i = 0
 for i in range(N_positions-1, -1, -1):
 # for i in [0]:
     t1 = time()
 
-    # imb = (imd[i]-backd)[limsd[0]:limsd[1], limsd[2]:limsd[3]]
-    # known = knownsd[i]
-    
-    imb = (imu[i]-backu)[limsu[0]:limsu[1], limsu[2]:limsu[3]]
-    known = knownsu[i]
+    # imb = (imu[i]-backu)[limsu[0]:limsu[1], limsu[2]:limsu[3]]
+    # known = knownsu[i]
 
-    g1, pp, tt = get_points(imb, tol_f=0.006, tol_ga=0.2)
-    out, gridpos = find_indices(pp, known, eps=0.25, lim_ind=[0, 25, -1e5, 54], gps=[1,1])
-    gridpos[:,1] = gridpos[:,1] - 5 
+    # g1, pp, tt = get_points(imb, tol_f=0.005, tol_ga=0.2)
+    # out, gridpos = find_indices(pp, known, eps=0.25, lim_ind=[0, 25, -1e5, 49], gps=[1,1])
+    # gridpos[:,1] = gridpos[:,1] + 2
+
+
+    imb = (imd[i]-backd)[limsd[0]:limsd[1], limsd[2]:limsd[3]]
+    known = knownsd[i]
+
+    g1, pp, tt = get_points(imb, tol_f=0.008, tol_ga=0.3)
+    out, gridpos = find_indices(pp, known, eps=0.25, lim_ind=[0, 25, -1e5, 44], gps=[1,-1])
+    gridpos[:,1] = gridpos[:,1] - 0
+
 
     t2 = time()
     print(t2-t1, end=' ')
@@ -691,13 +721,13 @@ for i in range(N_positions-1, -1, -1):
 
 # %%
 t1 = time()
-knownsu = {0: [1353, 1351, 1327], 1: [1355, 1353, 1329], 2: [1359, 1357, 1332], 3: [1362, 1363, 1336], 4: [1362, 1363, 1337], 5: [1367, 1366, 1341], 6: [1369, 1367, 1342], 
-           7: [1372, 1370, 1346], 8: [1374, 1373, 1347], 9: [1376, 1375, 1350], 10: [1378, 1376, 1351], 11: [1379, 1377, 1352], 12: [1381, 1379, 1355], 13: [1382, 1380, 1355], 
-           14: [1385, 1383, 1359]}
+knownsu = {0: [1207, 1205, 1180], 1: [1242, 1240, 1215], 2: [1254, 1251, 1227], 3: [1258, 1256, 1231], 4: [1256, 1254, 1229], 5: [1254, 1252, 1227], 
+           6: [1251, 1249, 1224], 7: [1254, 1252, 1227], 8: [1250, 1248, 1223], 9: [1249, 1247, 1222], 10: [1251, 1250, 1224], 11: [1250, 1248, 1223], 
+           12: [1248, 1246, 1221], 13: [1254, 1252, 1228], 14: [1250, 1248, 1223]}
 
-knownsd = {0: [38, 39, 12], 1: [40, 41, 14], 2: [42, 43, 16], 3: [45, 46, 19], 4: [47, 48, 21], 5: [50, 51, 24], 6: [52, 53, 26], 7: [52, 53, 26], 8: [53, 54, 27], 
-           9: [56, 57, 30], 10: [59, 60, 33], 11: [60, 61, 34], 12: [63, 64, 37], 13: [65, 66, 39], 14: [68, 69, 42]}
 
+knownsd = {0: [28, 30, 55], 1: [32, 33, 58], 2: [35, 37, 62], 3: [39, 41, 66], 4: [43, 45, 70], 5: [49, 51, 76], 6: [54, 56, 81], 7: [57, 60, 84],
+           8: [61, 63, 88], 9: [65, 67, 92], 10: [67, 69, 94], 11: [73, 75, 100], 12: [81, 83, 108], 13: [83, 85, 110], 14: [87, 89, 114]}
 
 # Find all grid indices 
 pgridd, pposd = [], []
@@ -706,19 +736,19 @@ for i in tqdm(range(N_positions)):
     imb = (imd[i]-backd)[limsd[0]:limsd[1], limsd[2]:limsd[3]]
     g1, pp, tt = get_points(imb, tol_f=0.008, tol_ga=0.3)
     known = knownsd[i]
-    outd, gridposd = find_indices( pp, known, eps=0.25, lim_ind=[0, 25, -1e5, 49], gps=[1,1] )
-    gridposd[:,1] = gridposd[:,1] - 5 # only for this experiment
+    outd, gridposd = find_indices( pp, known, eps=0.25, lim_ind=[0, 25, -1e5, 49], gps=[1,-1] )
+    gridposd[:,1] = gridposd[:,1] - 0# only for this experiment
     
     pposd.append(outd + [float(limsd[2] or 0), float(limsd[0] or 0)] )  # add pixels removed
     pgridd.append(np.hstack((gridposd, np.zeros((len(gridposd), 1))+(N_positions-1)-i)))
 
 for i in tqdm(range(N_positions)):
     imb = (imu[i]-backu)[limsu[0]:limsu[1], limsu[2]:limsu[3]]
-    g1, pp, tt = get_points(imb, tol_f=0.006, tol_ga=0.2)
+    g1, pp, tt = get_points(imb, tol_f=0.005, tol_ga=0.2)
     known = knownsu[i]
-    outu, gridposu = find_indices( pp, known, eps=0.25, lim_ind=[0, 25, -1e5, 54], gps=[1,1] )
+    outu, gridposu = find_indices( pp, known, eps=0.25, lim_ind=[0, 25, -1e5, 49], gps=[1,1] )
     pposu.append(outu + [float(limsu[2] or 0), float(limsu[0] or 0)] )  # add pixels removed
-    gridposu[:,1] = gridposu[:,1] - 5 # only for this experiment
+    gridposu[:,1] = gridposu[:,1] + 2 # only for this experiment
     
     pgridu.append(np.hstack((gridposu, np.zeros((len(gridposu), 1))+(N_positions-1)-i)))
 
@@ -736,7 +766,7 @@ u_pix = np.vstack([pposu[i] for i in range(N_positions)])
 mw = (-7.5+3)/(294+390)
 angle_xy = np.arctan(np.abs(mw))
 wall_dist = np.cos(angle_xy) * -7.5 + np.sin(angle_xy) * 294
-angle_yz = 0.00639389483533472
+angle_yz = 0.016030356899707485
 angle_xz = 0 * np.pi/180 # 0.04726 * np.pi/180 
 
 d_pos_r = rotate_coords(d_pos, [0, 1], angle_xy)
@@ -767,8 +797,16 @@ i = 13
 ini,fin = cutoff_d[0], cutoff_d[-1]
 
 plt.figure()
-plt.plot(  d_pos[ini:fin,0],   d_pos[ini:fin,1], '.' )
-plt.plot(d_pos_r[ini:fin,0], d_pos_r[ini:fin,1], '.' )
+
+# z-y plane
+plt.plot(  d_pos[ini:fin,2],   d_pos[ini:fin,1], '.' )
+plt.plot(d_pos_r[ini:fin,2], d_pos_r[ini:fin,1], '.' )
+
+# x-y plane
+# plt.plot(  d_pos[ini:fin,0],   d_pos[ini:fin,1], '.' )
+# plt.plot(d_pos_r[ini:fin,0], d_pos_r[ini:fin,1], '.' )
+
+
 plt.grid()
 plt.show()
 
@@ -779,7 +817,7 @@ plt.show()
 #%%
 
 # Visual checks to see if the calibration worked
-came = 'd'
+came = 'u'
 if came == 'd':
     cutoff, lab, pix_pos, Xb, Yb = cutoff_d, lab_d, d_pix, Xb_d, Yb_d
     # real_pos = d_pos
@@ -831,7 +869,7 @@ plt.figure()
 plt.hist(dists_d, bins=100, density=True, alpha=0.5, label='Down camera')
 plt.hist(dists_u, bins=100, density=True, alpha=0.5, label='Top camera')
 plt.hist(np.hstack((dists_d, dists_u)), bins=100,
-         density=True, alpha=0.5, label='Both cameras')
+          density=True, alpha=0.5, label='Both cameras')
 plt.xlabel('Distance (mm)')
 plt.legend()
 plt.show()
