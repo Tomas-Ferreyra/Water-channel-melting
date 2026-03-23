@@ -603,7 +603,7 @@ def pixel_filtering(xi, xc, ili, extra_tol=10, filter_1=720, filter_2=22, filter
 #%%
 # 30 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/25-08-07/'
+path = '/Volumes/Ice blocks/Scan water channel/26-03-05/'
 
 data = np.load(path+'calibration_data.npz')
 angle_xy, angle_yz, angle_xz = float(data['arr_3']), float(data['arr_4']), float(data['arr_5'])
@@ -613,17 +613,12 @@ cal_do = data['arr_1']
 wall_distance = float(data['arr_2'])
 
 
-dvids = [cv2.VideoCapture( path + 'Camera down/DSC_9525.MOV'), # starts 3158
-         cv2.VideoCapture( path + 'Camera down/DSC_9526.MOV'),  
-         cv2.VideoCapture( path + 'Camera down/DSC_9527.MOV'),  
-         cv2.VideoCapture( path + 'Camera down/DSC_9528.MOV'),  
-         cv2.VideoCapture( path + 'Camera down/DSC_9529.MOV')  # ends 6258
+dvids = [cv2.VideoCapture( path + 'Camera down/DSC_9997.MOV'), # starts 4542
+         cv2.VideoCapture( path + 'Camera down/DSC_9998.MOV')  # ends 19312
          ]
 
-uvids = [cv2.VideoCapture( path + 'Camera up/DSC_6011.MOV'), # starts 3198
-         cv2.VideoCapture( path + 'Camera up/DSC_6012.MOV'), 
-         cv2.VideoCapture( path + 'Camera up/DSC_6013.MOV'), 
-         cv2.VideoCapture( path + 'Camera up/DSC_6014.MOV')  # ends 6139
+uvids = [cv2.VideoCapture( path + 'Camera up/DSC_0015.MOV'), # starts 4482
+         cv2.VideoCapture( path + 'Camera up/DSC_0016.MOV')  # ends 17485
          ]
 
 dlens = [0]+[int(dvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(dvids))]
@@ -632,31 +627,16 @@ ulens = [0]+[int(uvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(uvid
 #fps 30, (supposedly 29.97)
 #%%
 # Visualize some frames, useful for finding led position
-l = -1
+l = 1
 
-# for i in range(6258,6261,1):
-#     dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
+for i in range(15900,15910,1):
+    dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
     
-#     im = np.array( dvids[l].read()[1] )[:,:,::-1]
-#     # im = np.array( dvids[l].read()[1] )[120:160,2650:2700,::-1]
-#     # im = np.array( dvids[l].read()[1] )[:,1500:2700,::-1]
-#     # im = grayscale_im(im)
-#     # im = im[:,:,0]
-
-#     plt.figure()
-#     plt.imshow(im, cmap='gray') #, vmax=20) 
-#     plt.title(i)
-#     plt.show()
-#     print(i, np.mean(im), np.median(im))
-
-for i in range(6139,6143,1):
-    uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-    
-    im = np.array( uvids[l].read()[1] )[:,:,::-1]
-    # im = np.array( uvids[l].read()[1] ) [1890:1935,2890:2930,::-1] 
-    # im = np.array( uvids[l].read()[1] ) [:,1400:2600,::-1] 
+    # im = np.array( dvids[l].read()[1] )[:,:,::-1]
+    im = np.array( dvids[l].read()[1] )[85:130,480:530,::-1]
+    # im = np.array( dvids[l].read()[1] )[:,1500:2700,::-1]
     # im = grayscale_im(im)
-    # im = im[:,:,0]
+    im = im[:,:,0]
 
     plt.figure()
     plt.imshow(im, cmap='gray') #, vmax=20) 
@@ -664,12 +644,27 @@ for i in range(6139,6143,1):
     plt.show()
     print(i, np.mean(im), np.median(im))
 
+# for i in range(15870,15880,1):
+#     uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+    
+#     # im = np.array( uvids[l].read()[1] )[:,:,::-1]
+#     im = np.array( uvids[l].read()[1] ) [1970:2010,415:460,::-1] 
+#     # im = np.array( uvids[l].read()[1] ) [:,1400:2600,::-1] 
+#     # im = grayscale_im(im)
+#     im = im[:,:,0]
+
+#     plt.figure()
+#     plt.imshow(im, cmap='gray') #, vmax=20) 
+#     plt.title(i)
+#     plt.show()
+#     print(i, np.mean(im), np.median(im))
+
 
 
 #%%
 # Led finding
-d_led = [120,160,2650,2700]
-u_led = [1890,1935,2890,2930]
+d_led = [85,130,480,530]
+u_led = [1970,2010,415,460]
 
 u_mes, d_mes = [],[]
 
@@ -689,14 +684,14 @@ for l in range(len(uvids)):
         im = im[:,:,2]
         u_mes.append(np.mean(im))
 
-np.savez(path+'led_blink(2).npz', u_mes=u_mes, d_mes=d_mes)
+np.savez(path+'led_blink.npz', u_mes=u_mes, d_mes=d_mes)
 
 #%%
 
 blink = np.load(path+'led_blink.npz')
 u_mes,d_mes = blink['u_mes'], blink['d_mes']
 
-threshold = [120]
+threshold = [100]
 plt.figure()
 plt.plot( u_mes , '.-')
 plt.plot( d_mes, '.-')
@@ -707,16 +702,16 @@ plt.show()
 #%%
 # Finding frame where to start reconstruction (from led blinking)
 N = 60
-shift = -10
-endd = 76137 # np.sum(dlens) # 83090 + 0 # np.sum(dlens)
-endu = np.sum(ulens) # 83062 + 0 # np.sum(ulens)
+shift = 0
+endd = 47707 # np.sum(dlens) # 83090 + 0 # np.sum(dlens)
+endu = 47665 # np.sum(ulens) # 83062 + 0 # np.sum(ulens)
 
 d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
 
-d_missing, d_led, d_frame, d_time = count_missing_frames_with_video_lengths(d_mes, dlens[:], [3317, endd], fps=30, 
-                                                                            threshold=47.5, divisor=2, missing_cycles=None )
-u_missing, u_led, u_frame, u_time = count_missing_frames_with_video_lengths(u_mes, ulens[:], [3381, endu], fps=30, 
-                                                                            threshold=40, divisor=2 )
+d_missing, d_led, d_frame, d_time = count_missing_frames_with_video_lengths(d_mes, dlens[:], [4542, endd], fps=30, 
+                                                                            threshold=100, divisor=2, missing_cycles=None )
+u_missing, u_led, u_frame, u_time = count_missing_frames_with_video_lengths(u_mes, ulens[:], [4482, endu], fps=30, 
+                                                                            threshold=100, divisor=2 )
 print('Down')
 d_frame, d_vid, d_time = is_reconstructable(d_frame, dlens, N, d_time, shift=shift, fps=30 )
 
@@ -763,72 +758,72 @@ plt.show()
 
 #%%
 
-d_frame = np.arange(3158, np.sum( dlens ) - dlens[-1] + 6258+1, 1 )
-d_vid = np.searchsorted( np.cumsum(dlens), d_frame) - 1
-d_missing = np.array( [0,0,0,0,812] )
+# d_frame = np.arange(3158, np.sum( dlens ) - dlens[-1] + 6258+1, 1 )
+# d_vid = np.searchsorted( np.cumsum(dlens), d_frame) - 1
+# d_missing = np.array( [0,0,0,0,812] )
 
-d_pframe = d_frame+d_missing[d_vid]
-d_times = (d_pframe ) / 30
+# d_pframe = d_frame+d_missing[d_vid]
+# d_times = (d_pframe ) / 30
 
-d_time = (d_times - d_times[0]) % 30 < 0.01
+# d_time = (d_times - d_times[0]) % 30 < 0.01
 
-alog = np.arange(3158, 3158+len(d_times) )
+# alog = np.arange(3158, 3158+len(d_times) )
 
-plt.figure()
-# plt.plot( np.diff( d_frame ), '.-' )
-# plt.plot( np.diff( d_pframe ), '.-' )
-plt.plot( alog, d_times  / 60 , '.-' )
-plt.plot( alog[d_time], d_times[d_time] / 60 , '.' )
-plt.vlines( np.cumsum(dlens), -1,35, colors='gray' )
-plt.grid()
-plt.title('d')
-plt.show()
-
-
-
-u_frame = np.arange(3198, np.sum( ulens ) - ulens[-1] + 6139+1, 1 )
-u_vid = np.searchsorted( np.cumsum(ulens), u_frame) - 1
-u_missing = np.array( [0,0,0,937] )
-
-u_pframe = u_frame+u_missing[u_vid]
-u_times = (u_pframe ) / 30
-
-u_time = np.logical_or( (u_times - u_times[0]) % 30 < 0.01, (u_times - u_times[0]) % 30 > 29.99 )
-
-alog = np.arange(3198, 3198+len(u_times) )
-
-plt.figure()
-# plt.plot( np.diff( u_frame ), '.-' )
-# plt.plot( np.diff( u_pframe ), '.-' )
-plt.plot( alog, u_times  / 60 , '.-' )
-plt.plot( alog[u_time], u_times[u_time] / 60 , '.' )
-plt.vlines( np.cumsum(ulens), -1,35, colors='gray' )
-plt.grid()
-plt.title('u')
-plt.show()
-
-N = 60
-d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
-
-d_frame = d_frame[d_time]
-d_vid = np.searchsorted( np.cumsum(dlens), d_frame) - 1
-d_time = (d_times - d_times[0])[d_time]
+# plt.figure()
+# # plt.plot( np.diff( d_frame ), '.-' )
+# # plt.plot( np.diff( d_pframe ), '.-' )
+# plt.plot( alog, d_times  / 60 , '.-' )
+# plt.plot( alog[d_time], d_times[d_time] / 60 , '.' )
+# plt.vlines( np.cumsum(dlens), -1,35, colors='gray' )
+# plt.grid()
+# plt.title('d')
+# plt.show()
 
 
-u_frame = u_frame[u_time]
-u_vid = np.searchsorted( np.cumsum(ulens), u_frame) - 1
-u_time = (u_times - u_times[0])[u_time]
+
+# u_frame = np.arange(3198, np.sum( ulens ) - ulens[-1] + 6139+1, 1 )
+# u_vid = np.searchsorted( np.cumsum(ulens), u_frame) - 1
+# u_missing = np.array( [0,0,0,937] )
+
+# u_pframe = u_frame+u_missing[u_vid]
+# u_times = (u_pframe ) / 30
+
+# u_time = np.logical_or( (u_times - u_times[0]) % 30 < 0.01, (u_times - u_times[0]) % 30 > 29.99 )
+
+# alog = np.arange(3198, 3198+len(u_times) )
+
+# plt.figure()
+# # plt.plot( np.diff( u_frame ), '.-' )
+# # plt.plot( np.diff( u_pframe ), '.-' )
+# plt.plot( alog, u_times  / 60 , '.-' )
+# plt.plot( alog[u_time], u_times[u_time] / 60 , '.' )
+# plt.vlines( np.cumsum(ulens), -1,35, colors='gray' )
+# plt.grid()
+# plt.title('u')
+# plt.show()
+
+# N = 60
+# d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
+
+# d_frame = d_frame[d_time]
+# d_vid = np.searchsorted( np.cumsum(dlens), d_frame) - 1
+# d_time = (d_times - d_times[0])[d_time]
+
+
+# u_frame = u_frame[u_time]
+# u_vid = np.searchsorted( np.cumsum(ulens), u_frame) - 1
+# u_time = (u_times - u_times[0])[u_time]
 
 
 #%%
 # testing camera down laser recognition
-i = -16155 + 18458
-disp = 0
+i = -28395 + 46976
+disp = 55
 l = 1
-first_graph = 1
-second_graph = 0
+first_graph = 0
+second_graph = 1
 
-lims = [None,None,1250,2250]
+lims = [None,None,1300,2450]
 filter_2 = 22
 filter_3 = 35 #np.nanstd(xii) * 3.
 
@@ -879,16 +874,16 @@ if second_graph:
 
 #%%
 # testing camera up laser recognition
-i = -0 + 4998
-disp = 59
+i = -0 + 4687
+disp = 2
 l = 0
-first_graph = 1
-second_graph = 0
+first_graph = 0
+second_graph = 1
 
-lims = [80,None,1300,2320]
+lims = [100,None,1250,2500]
 extra_tol = 15
-filter_1 = 600
-filter_2 = 30
+filter_1 = 800 #1000
+filter_2 = 35
 filter_3 = 35 #np.nanstd(xii) * 3.
 
 
@@ -951,7 +946,7 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
     gdo_y = gdo.create_dataset('y', (nt,ny*N), dtype='f') 
     gdo_z = gdo.create_dataset('z', (nt,ny*N), dtype='f') 
     
-    lims = [None,None,1250,2250]
+    lims = [None,None,1300,2450] 
     filter_2 = 22
     filter_3 = 35 
 
@@ -995,11 +990,11 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
     gup_y = gup.create_dataset('y', (nt,ny*N), dtype='f') 
     gup_z = gup.create_dataset('z', (nt,ny*N), dtype='f') 
     
-    lims = [80,None,1300,2320]
+    lims = [100,None,1250,2500]
     extra_tol = 15
-    filter_1 = 600
-    filter_2 = 30
-    filter_3 = 435
+    filter_1 = 800
+    filter_2 = 35
+    filter_3 = 35
 
     top,bot = int(lims[0] or 0), ny-int(lims[1] or ny) 
     gup_t[:] = u_time
@@ -1183,12 +1178,10 @@ def get_median_angles(angles,stops,restarts):
 
 # at 24 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/25-10-24/' # this one has 60 fps
+path = '/Volumes/Ice blocks/Scan water channel/26-03-05/' # this one has 60 fps
 
-bvids = [cv2.VideoCapture( path + 'Camera back/DSC_6506.MOV'), #starts 1034 
-         cv2.VideoCapture( path + 'Camera back/DSC_6507.MOV'), 
-         cv2.VideoCapture( path + 'Camera back/DSC_6508.MOV'), 
-         cv2.VideoCapture( path + 'Camera back/DSC_6509.MOV'), #ends 
+bvids = [cv2.VideoCapture( path + 'Camera back/_DSC5173.MOV'), #starts 1034 
+         cv2.VideoCapture( path + 'Camera back/_DSC5174.MOV'), #ends 17048
           ]
 
 blens = [0]+[int(bvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(bvids))]
@@ -1196,17 +1189,17 @@ blens = [0]+[int(bvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(bvid
 #%%
 # Find led to get times
 
-l = 3
-for i in range(970,980,1):
+l = 0
+for i in range(2760,2761,1):
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
 
-    # im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
-    im = np.array(bvids[l].read()[1])[1540:1600,880:930,::-1] #[150:2100,750:2800,::-1]
+    im = np.array(bvids[l].read()[1])[:,:,::-1] #[:1900,1050:2900,::-1]
+    # im = np.array(bvids[l].read()[1])[390:420,1750:1780,::-1] #[150:2100,750:2800,::-1]
     # im = np.array(bvids[l].read()[1])[:,:,::-1] #[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
-    im = im[:,:,0]
+    im = im[:,:,1]
     
     plt.figure()
-    plt.imshow(im)
+    plt.imshow(im, vmax=10)
     # plt.title('R, {}, {:.2f}'.format(i,np.mean(im[:,:,0])))
     # plt.title('{}, {:.2f}'.format(i,np.mean(im[:,:,0])))
     plt.title(i)
@@ -1225,19 +1218,19 @@ for i in range(970,980,1):
 
 #%%
 
-b_led = [1540,1600,880,930]
+b_led = [390,420,1750,1780]
 
 b_mes = []
 
-start = 1034
-end = 64326
+start = 0
+end = 17048
 
 for l in range(len(bvids)):
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
     
     starting, ending = 0, blens[l+1]
-    # if l == len(bvids)-1: ending = end
-    # if l == 0: starting = start
+    if l == len(bvids)-1: ending = end
+    if l == 0: starting = start
 
     for j in tqdm(range(starting, ending)):
 
@@ -1250,7 +1243,7 @@ b_mes = np.array(b_mes)
 
 #%%
 
-threshold = 130
+threshold = 100
 plt.figure()
 plt.plot( b_mes , '.-')
 plt.hlines( threshold, 0, len(b_mes), color='g' )
@@ -1269,16 +1262,20 @@ missing_frames
 #%%
 # Finding angle of handle
 
-l=0
-for i in range(4000,20000,1000):
-# for i in [30000]:
+l=1
+# for i in range(4000,20000,1000):
+for i in range(9709, 9630-1, -10):
+# for i in [12325]:
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
     # im = np.array(bvids[l].read()[1])[:,:,::-1] 
     # im = np.array(bvids[l].read()[1]) [50:1000,400:1450,::-1]
-    im = np.array(bvids[l].read()[1])[50:1000,400:1450,0]
+    im = np.array(bvids[l].read()[1])[50:1050,400:1500,1]
+    g = gaussian(im,20)
+    g[g>0.1] = 0
+    g = normalize(g)
     
     plt.figure()
-    plt.imshow( im > 100 )
+    plt.imshow( g , vmax= .5 )
     plt.title(i)
     plt.show()    
     
@@ -1289,7 +1286,7 @@ for i in range(4000,20000,1000):
 
 #%%
 # l = 0
-blims = [100,1030,550,1550]
+blims = [50,1050,400,1500]
 # blims = [50,1100,350,1400]
 
 pos = []
@@ -1308,9 +1305,9 @@ fil, fit_val = circle_filter(pos, im)
 fit_val
 #%%
 
-starts = [3825,0]
-ends = [blens[1], 14215]
-hand_lim = [50,1050,400,1450]
+starts = [0,0]
+ends = [blens[1], 17048]
+hand_lim = [50,1050,400,1500]
 
 t1 = time()
 
@@ -1321,8 +1318,9 @@ for l in range(len(starts)):
     
     for i in tqdm(range(n_frames)):
         
-        im = np.array(bvids[l].read()[1])[hand_lim[0]:hand_lim[1], hand_lim[2]:hand_lim[3], 0]
-        b_im = im > 100
+        im = np.array(bvids[l].read()[1])[hand_lim[0]:hand_lim[1], hand_lim[2]:hand_lim[3], 2]
+        im[30:100,880:980] = 0
+        b_im = im > 200
         yb, xb = np.where(b_im)
         cx, cy = np.mean(xb), np.mean(yb)
         
@@ -1332,11 +1330,58 @@ for l in range(len(starts)):
 cxs, cys = np.array(cxs), np.array(cys) 
 
 #%%
+mfr_1 = np.array( [8554,8624,8704,8984,9224,11454,12265,12275,12285,12315,12345,12375,12385,12405,12415,12435,12465,12485,12505,12515,12535,12555,
+       12575,12595,12625,12655,12675,12685,12715,12775,12825,12985,13195,13645,14195,14945,15950,16850,16900,16910,16940,16960,16980,17000,
+       17010,17030,17040,17060,17080,17090,17110,17130,17140,17160,17170,17190,17210,17230,17240,17260,17280,17290,17310,17330,17350,17370,
+       17390,17410,17440,17480,17530,17600,17900,18350,19600,20200,21600,21750,21800,21850,21860,21890,21900,21920,21940,21960,21970,21990,
+       22000,22030,22050,22070,22090,22110,22130,22140,22160,22180,22200,22220,22250,22270,22290,22300,22320,22340,22350,22370,22390,22410,
+       22430,22450,22460,22480,22500,22520,22550,22600,22620,22770] )
+mcx_1 = [236 ,374 ,425 ,452 ,452 ,455  ,447  ,482  ,839  ,836  ,244  ,222  ,623  ,633  ,996  ,390  ,149  ,677  ,671  ,996  ,674  ,122  ,
+       182  ,333  ,931  ,836  ,138  ,214  ,214  ,222  ,228  ,228  ,238  ,238  ,236  ,236  ,225  ,246  ,225  ,571  ,999  ,571  ,130  ,176  ,
+       398  ,428  ,985  ,801  ,214  ,238  ,401  ,514  ,999  ,779  ,301  ,108  ,287  ,384  ,920  ,939  ,436  ,122  ,249  ,412  ,950  ,926  ,
+       512  ,228  ,200  ,187  ,203  ,195  ,192  ,192  ,192  ,200  ,192  ,190  ,198  ,182  ,106  ,119  ,839  ,847  ,547  ,119  ,398  ,395  ,
+       731  ,907  ,926  ,368  ,154  ,704  ,782  ,961  ,412  ,195  ,228  ,709  ,936  ,709  ,222  ,146  ,368  ,420  ,1009 ,693  ,333  ,133  ,
+       265  ,276  ,899  ,882  ,547  ,255  ,265  ,271  ,271,  279  ]
+mcy_1 = [166 ,907 ,961 ,964 ,972 ,956  ,964  ,953  ,872  ,136  ,130  ,785  ,964  ,975  ,377  ,63   ,693  ,934  ,964  ,569  ,33   ,339  ,
+       764  ,918  ,777  ,122  ,260  ,812  ,877  ,853  ,864  ,853  ,837  ,850  ,858  ,866  ,858  ,853  ,845  ,972  ,415  ,68   ,304  ,764  ,
+       958  ,961  ,682  ,149  ,204  ,807  ,923  ,961  ,555  ,139  ,82   ,550  ,912  ,948  ,810  ,277  ,76   ,428  ,874  ,948  ,739  ,277  ,   
+       71   ,195  ,220  ,228  ,231  ,222  ,214  ,220  ,217  ,225  ,217  ,220  ,225  ,231  ,409  ,631  ,899  ,158  ,76   ,406  ,923  ,939  ,
+       915  ,820  ,217  ,95   ,658  ,934  ,915  ,306  ,68   ,225  ,834  ,926  ,277  ,76   ,193  ,580  ,920  ,956  ,588  ,71   ,95   ,417  ,
+       874  ,896  ,788  ,212  ,55   ,160  ,160  ,155  ,155  ,152  ]
+
+
+mfr_2 = np.array( [0   ,700 ,1500,2500,3500,4500,4800,4850,4870,4880,4900,4920,4950,4960,4970,4980,5000,5020,5050,5070,5090,5110,5130,5160,5180,5200,5220,
+         5240,5260,5270,5290,5310,5330,5350,5370,5390,5410,5430,5450,5470,5480,5500,5520,5540,5560,5580,5600,5620,5640,5660,5680,5700,5720,5740,
+         5750,5780,5800,6500,7500,8500,9550,9560,9570,9590,9630,9700,9800,9930,10000,10360,10400,10420,10440,10470,10480,10510,10560,10600,10620,
+         10640,10690,10760 ]) #,10800,11000,12000,13000,15000  ] )
+
+mcx_2 = [271 ,263 ,263 ,271 ,263 ,268 ,265 ,265 ,260 ,122 ,328 ,731 ,728 ,993 ,966 ,363 ,238 ,504 ,493 ,991 ,585 ,138 ,587 ,809 ,871 ,311 ,114 ,
+         539 ,555 ,963 ,704 ,146 ,117 ,344 ,338 ,982 ,731 ,136 ,490 ,525 ,999 ,512 ,125 ,463 ,587 ,991, 625 ,141 ,274 ,604 ,988 ,834 ,255 ,171 ,
+         217 ,211 ,222 ,195 ,222 ,214 ,200 ,179 ,393 ,509 ,517 ,493 ,512 ,541 ,522  ,980  ,414  ,360  ,677  ,701  ,963  ,274  ,709  ,817  ,836  ,
+         807  ,798  ,804  ] #,798  ,785  ,801  ,798  ,796  ]
+
+mcy_2 = [158 ,155 ,155 ,160 ,158 ,155 ,160 ,158 ,166 ,539 ,904 ,934 ,939 ,501 ,314 ,101 ,839 ,948 ,937 ,585 ,47  ,433 ,950 ,883 ,190 ,112 ,661 , 
+         950 ,934 ,672 ,120 ,323 ,425 ,923 ,926 ,631 ,98  ,420 ,948 ,958 ,371 ,49  ,555 ,937 ,958 ,539 ,71  ,347 ,880 ,948 ,615 ,166 ,160 ,701 ,
+         796 ,801 ,818 ,812 ,796 ,807 ,804 ,791 ,920 ,950 ,948 ,945 ,958 ,942 ,953  ,358  ,66   ,885  ,931  ,931  ,333  ,133  ,904  ,885  ,144  ,
+         141  ,149  ,141  ] #,168  ,155  ,179  ,174  ,160  ]
+
 
 plt.figure()
 plt.imshow( im )
-plt.plot(cxs, cys, 'r.-')
+plt.plot(cxs, cys, 'r.')
+plt.plot(mcx_1, mcy_1, 'g.')
+plt.plot(mcx_2, mcy_2, 'g.')
+
+# plt.plot(cys, 'r.-')
+# plt.plot(mfr_1,mcy_1, 'b.-')
+# plt.plot(mfr_2+22773,mcy_2, 'b.-')
+# plt.plot(cxs, 'g.-')
+# plt.plot(mfr_1,mcx_1, 'y.-')
+
+
 plt.show()
+
+#%%
 
 def circle_center(val):
     div = 1e5
@@ -1345,7 +1390,7 @@ def circle_center(val):
     
     return np.nansum( np.abs( xte**2 / div + yte**2 / div - val[0]**2 / div ) )
     
-ll = least_squares(circle_center, [482,491,400])
+ll = least_squares(circle_center, [450,570,550])
 
 def angles(cxs, cys, vals ):
     return np.arctan2( -(cys-vals[2]), cxs-vals[1] )
@@ -1361,15 +1406,26 @@ plt.show()
 
 #%%
 
-# ang[6211] = ang[6174]
-# ang[6218] = ang[6590]
-# ang[20021] = ang[19990]
-# ang[20027] = ang[20561]
+all_fr = np.arange(len(cxs))
+all_cx, all_cy = np.copy(cxs), np.copy(cys)
+all_cx[mfr_1], all_cy[mfr_1] = mcx_1, mcy_1
+all_cx[mfr_2+blens[1]], all_cy[mfr_2+blens[1]] = mcx_2, mcy_2
+
+all_cx[32411], all_cy[32411] = np.nan, np.nan
+
+# all_fr, all_cx, all_cy = all_fr[~np.isnan(all_cx)], all_cx[~np.isnan(all_cx)], all_cy[~np.isnan(all_cy)]
+
+all_ang = angles(all_cx, all_cy, ll.x )
 
 plt.figure()
-plt.plot( ang, '.-' )
+
+# plt.plot( np.unwrap(ang), '.-' )
+plt.plot(all_fr, np.unwrap(all_ang), '.' )
+# plt.plot(all_fr, (all_ang), '.-' )
+
 plt.grid()
 plt.show()
+
 
 
 
@@ -1409,6 +1465,33 @@ np.savez(path+'back_position.npz', time=tim_f, position=backpos)
 
 
 
+all_frames = np.cumsum(blens)
+
+m_frame = [0,57]
+btime = np.empty(0)
+for i in range(len(starts)):
+    timeb = np.arange( starts[i], ends[i]  )
+    timeb = ( timeb-timeb[0] + m_frame[i] + len(btime) ) / 24
+    btime = np.concatenate( (btime,timeb) )
+
+fil = np.isnan(all_ang)
+
+ang_f, tim_f = all_ang[~fil], btime[~fil] 
+uang_f = np.unwrap(ang_f)
+
+backpos = np.unwrap(uang_f - uang_f[100]) * 2.5/(2*np.pi)
+
+
+plt.figure()
+# plt.plot( btime, '.-' )
+# plt.plot( tim_f, ang_f, '-' )
+plt.plot( tim_f, uang_f, '.-' )
+plt.plot( tim_f, backpos, '.-' )
+plt.grid()
+plt.show()
+
+
+np.savez(path+'back_position.npz', time=tim_f, position=backpos)
 
 
 
@@ -1919,7 +2002,7 @@ np.savez(path+'back_position.npz', time=times, position=backpos)
 
 #%%
 
-path = '/Volumes/Ice blocks/Scan water channel/25-08-07/' # this one has 60 fps
+path = '/Volumes/Ice blocks/Scan water channel/25-08-07/' # this one has 30 fps
 
 bvid_cal = cv2.VideoCapture( path + 'Camera back/DSC_0435.MOV')
 
