@@ -371,6 +371,39 @@ def scallop_props(rec_f, rec_y, scaprop, scapropk, dz=2.5, dy=0.5, area_thres=10
 
 
 def calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=False, integral=True ):
+    """
+    Calculate the melt rate from a smoothed reconstruction.
+    
+    Computes spatial and temporal gradients of the Gaussian-smoothed
+    reconstruction, then calculates spatially averaged melt rates and
+    their temporal average or standard deviation.
+    
+    Parameters
+    ----------
+    f : int
+        Flag controlling gradient calculation, with special handling for f == 0.
+    rec_x : ndarray
+        Reconstruction data.
+    rec_back : ndarray
+        Background correction added to the reconstruction.
+    sigmas : list of float, optional
+        Gaussian smoothing widths in time, y, and z.
+    time_val : bool, optional
+        If True, return time-dependent melt rates.
+    integral : bool, optional
+        If True, calculate spatially averaged and temporally integrated
+        melt rates; otherwise, use simple means.
+    
+    Returns
+    -------
+    gt : ndarray
+        Temporal gradient of the smoothed reconstruction.
+    melt_rate : float or ndarray
+        Average melt rate, or time-dependent melt rates if time_val=True.
+    st : float
+        Standard deviation of the time-dependent average melt rate,
+        or 0 when time_val=True.
+    """
     tsig, ysig, zsig = sigmas
     rec_xg = nangauss(rec_x + rec_back[:,None,None] , [tsig,ysig,zsig])
     
@@ -386,11 +419,13 @@ def calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=False, int
         gt, gy, gz = np.gradient( rec_xg, rec_t, rec_y[:,0], rec_z[0] )
         
     mask = ~np.isnan(gt)
-    areas = np.trapezoid( np.trapezoid( mask, dx=dz, axis=2 ), dx=dy, axis=1)
+    # areas = np.trapezoid( np.trapezoid( mask, dx=dz, axis=2 ), dx=dy, axis=1)
+    areas = np.trapz( np.trapz( mask, dx=dz, axis=2 ), dx=dy, axis=1)
 
     gt0 = np.copy(gt)
     gt0[np.isnan(gt0)] = 0
-    av_melt = np.trapezoid( np.trapezoid( gt0, dx=dz, axis=2 ), dx=dy, axis=1)
+    # av_melt = np.trapezoid( np.trapezoid( gt0, dx=dz, axis=2 ), dx=dy, axis=1)
+    av_melt = np.trapz( np.trapz( gt0, dx=dz, axis=2 ), dx=dy, axis=1)
     av_melt = av_melt / areas /2
     
     st = np.nanstd( av_melt )
@@ -401,22 +436,133 @@ def calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=False, int
             
     else:
         if integral: 
-            
-            
             av_melt[np.isnan(av_melt)] = 0
-            avg_melt = np.trapezoid( av_melt, x=rec_t  ) / rec_t[-1]
+            # avg_melt = np.trapezoid( av_melt, x=rec_t  ) / rec_t[-1]
+            avg_melt = np.trapz( av_melt, x=rec_t  ) / rec_t[-1]
             return gt, avg_melt, st
         else: return gt, np.nanmean( gt ), np.nanstd( gt )
 
 
+def area_superficial_2d(f, x, y, mask):
+    dx = x[0, 1] - x[0, 0]
+    dy = y[1, 0] - y[0, 0]
+    
+    fy, fx = np.gradient(f, dy, dx)
+    
+    # Control de indeterminaciones en bordes abruptos (como la esfera)
+    fx = np.nan_to_num(fx, nan=0.0, posinf=0.0, neginf=0.0)
+    fy = np.nan_to_num(fy, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    func = np.sqrt(1 + fx**2 + fy**2)    
+    x0 = x[0, :]
+    y0 = y[:, 0]
+    
+    if mask is None:
+        mask = np.ones_like(f, dtype=bool)
+    func[~mask] = 0.0
+    
+    return np.trapz(np.trapz(func, x0, axis=1), y0, axis=0)
+
+def area_superficial_multi_2d(f, x, y, mask=None):
+    # Asegurar que f sea una matriz 3D (N, p, q). Si es 2D, se transforma a (1, p, q)
+    if f.ndim == 2:
+        f = f[np.newaxis, :, :]
+    
+    N, p, q = f.shape
+    
+    # Extraer el espaciado escalar a partir de las mallas de coordenadas 2D (p, q)
+    dx = x[0, 1] - x[0, 0]
+    dy = y[1, 0] - y[0, 0]
+    
+    # Extraer vectores de integración unidimensionales
+    x0 = x[0, :]
+    y0 = y[:, 0]
+    
+    # Configurar la lógica de la máscara según su forma
+    if mask is None:
+        # Sin máscara: se acepta todo para las N superficies
+        mascaras = np.ones((N, p, q), dtype=bool)
+    elif mask.ndim == 2:
+        # Máscara única de (p, q) se repite para las N superficies
+        mascaras = np.repeat(mask[np.newaxis, :, :], N, axis=0)
+    else:
+        # Máscara ya viene con forma (N, p, q)
+        mascaras = mask
+        
+    areas = np.zeros(N)
+    
+    # Procesar cada una de las N superficies
+    for i in range(N):
+        fi = f[i]
+        mi = mascaras[i]
+        
+        fy, fx = np.gradient(fi, dy, dx)
+        
+        # Control de indeterminaciones en bordes
+        fx = np.nan_to_num(fx, nan=0.0, posinf=0.0, neginf=0.0)
+        fy = np.nan_to_num(fy, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        func = np.sqrt(1 + fx**2 + fy**2)    
+        func[~mi] = 0.0
+        
+        # Integración y almacenamiento del resultado
+        areas[i] = np.trapz(np.trapz(func, x0, axis=1), y0, axis=0)
+        
+    # Si la entrada original era una sola superficie 2D, devolvemos un escalar en vez de un arreglo
+    return areas[0] if N == 1 and areas.size == 1 else areas
+
+
+
+def density_millero(t, s):
+    """
+    Computes density of seawater in kg/m^3.
+    Function taken from Eq. 6 in Sharqawy2010.
+    Valid in the range 0 < t < 40 degC and 0.5 < sal < 43 g/kg.
+    Accuracy: 0.01%
+    """
+    t68 = t / (1 - 2.5e-4)  # inverse of Eq. 4 in Sharqawy2010
+    sp = s / 1.00472  # inverse of Eq. 3 in Sharqawy2010
+
+    rho_0 = 999.842594 + 6.793952e-2 * t68 - 9.095290e-3 * t68 ** 2 + 1.001685e-4 * t68 ** 3 - 1.120083e-6 * t68 ** 4 + 6.536336e-9 * t68 ** 5
+    A = 8.24493e-1 - 4.0899e-3 * t68 + 7.6438e-5 * t68 ** 2 - 8.2467e-7 * t68 ** 3 + 5.3875e-9 * t68 ** 4
+    B = -5.72466e-3 + 1.0227e-4 * t68 - 1.6546e-6 * t68 ** 2
+    C = 4.8314e-4
+    rho_sw = rho_0 + A * sp + B * sp ** (3 / 2) + C * sp ** 2
+    return rho_sw
+
+def mu_visco(T):
+    """ Vogel equation """
+    return 2.414e-5 * 10**( 247.8 / (T + 133.15) )
+def nu_visco(T):
+    """ Vogel equation """
+    return mu_visco(T) / density_millero(T, 0)
+
+def thermal_cond(T):
+    " Holzmann CFD: https://holzmann-cfd.com/community/blog-and-tools/cae-blog/thermophysical-properties-water"
+    T = T + 273.15
+    return -9.29827e-6 * T**2 + 0.0071857 * T - 0.710696
+
+def heat_capacity(T):
+    " Holzmann CFD: https://holzmann-cfd.com/community/blog-and-tools/cae-blog/thermophysical-properties-water"
+    T = T + 273.15
+    return -0.000127063 * T**3 + 0.13736 * T**2 - 48.6714 * T + 9850.69
+
+def heat_diff(T):
+    return thermal_cond(T) / (heat_capacity(T) * density_millero(T,0) )
+
+
+def temp_t(T_top, T_bot, rec_t, tiempo):
+    converted_t = rec_t + tiempo[-1] - rec_t[-1] - 10
+    indices = np.searchsorted(tiempo,converted_t)
+    return (T_top[indices] + T_bot[indices])/2 
 
     
-all_folders = ['25-08-07','25-09-29','25-10-24','25-11-17','25-12-12','26-01-27','26-02-17','26-03-05', '26-05-26' ]
-grid_vels   = [ 0.5      , 0.3      , 0.9      , 0.3      , 0.0      , 0.3      , 0.9      , 0.3      ,  0.3       ]
+all_folders = ['25-08-07','25-09-29','25-10-24','25-11-17','25-12-12','26-01-27','26-02-17','26-03-05','26-05-26','26-07-09' ]
+grid_vels   = [ 0.5      , 0.3      , 0.9      , 0.3      , 0.0      , 0.3      , 0.9      , 0.3      , 0.3      , 0.3       ]
 nf = len(all_folders)
 
-starts = [ 1900 , 650  , 750  , 1250 , 2060 , 1000 , 108  , 190640, 940 ]
-ends   = [ 21700, 28000, 28600, 35250, 18980, 12580, 14980, 205690, 9433 ]
+starts = [ 1900 , 650  , 750  , 1250 , 2060 , 1000 , 108  , 190640, 940 , 920  ]
+ends   = [ 21700, 28000, 28600, 35250, 18980, 12580, 14980, 205690, 9433, 9538 ]
 
 rho_ice = 916.8 # kg / m^3
 latent = 334e3 # J / kg  or m^2/s^2 
@@ -432,17 +578,19 @@ area_Q = 0.3 * 0.08
 
 t1 = time()
 
-f = 8
+f = 0
 
 path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
 surface = True
 channel = True
 
 rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, starts[f], ends[f] )
+# rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, 0, -1 )
 
 if f==0: rec_x[16] = np.nan
 elif f==2: back_t, back_x = back_t[:-1], back_x[:-1]
-    
+
+t_med = time()    
 
 rec_f = fill_reconstruction(rec_x, sigma=1)
 rec_back = np.interp(rec_t, back_t, back_x )
@@ -453,22 +601,36 @@ dz, dy = 2.5, 0.5
 t2 = time()
 print(t2-t1)
 
+print( f'{f},\tvel: {np.median(Q_tunnel)/area_Q/3600:.2f} m/s,\t T:{np.median(T_top):.1f} °C,\t GSF: {grid_vels[f]}'  )
+print(rec_x.shape)
+
 #%%
 
-i = 20
+i = 38
 ysig = 15
 zsig = 3
 
 lims = [np.nanmin(rec_z), np.nanmax(rec_z),np.nanmin(rec_y),np.nanmax(rec_y)]
 
-# fig, ax = plt.subplots(1,2, figsize=(6,5))
+rec_xf = np.copy(rec_x)
+filt_y = np.argmin(np.all(rec_y <= 0, axis=1))
+rec_xf[:,:filt_y,:] = np.nan
 
-# s1 = ax[0].imshow( rec_x[i], extent=lims, origin='lower' )
-# s2 = ax[1].imshow( rec_f[i], extent=lims, origin='lower' )
 
-# plt.colorbar(s1, ax=ax[0])
-# plt.colorbar(s2, ax=ax[1])
-# plt.show()
+fig, ax = plt.subplots(1,2, figsize=(6,5))
+
+s1 = ax[0].imshow( rec_x[i], extent=lims, origin='lower' )
+s2 = ax[1].imshow( rec_f[i], extent=lims, origin='lower' )
+
+# s1 = ax[0].imshow( rec_x[i], extent=lims , origin='lower' )
+# s2 = ax[1].imshow( rec_xf[i], extent=lims , origin='lower' )
+
+# s1 = ax[0].imshow( rec_z, extent=lims, origin='lower' )
+# s2 = ax[1].imshow( rec_y, extent=lims, origin='lower' )
+
+plt.colorbar(s1, ax=ax[0])
+plt.colorbar(s2, ax=ax[1])
+plt.show()
 
 # kurv, _,_,_,_,_,_ = kurvature(rec_x, rec_t, rec_y, rec_z, sigmas=[0, ysig, zsig ] )
 # plt.figure()
@@ -490,23 +652,232 @@ lims = [np.nanmin(rec_z), np.nanmax(rec_z),np.nanmin(rec_y),np.nanmax(rec_y)]
 # plt.legend()
 # plt.show()
 
-plt.figure()
-# plt.plot( tiempo, T_amb, '.-' , label='Amb' )
-plt.plot( tiempo, T_top, '.-' , label='Top')
-plt.plot( tiempo, T_bot, '.-' , label='Bot' )
 
-# plt.plot( tiempo, Q_tunnel, '.-', label='Q' )
-plt.plot( tiempo, Q_tunnel / area_Q / 3600 , '.-', label='vel (m/s)'  )
 
-# plt.plot( T_top, '.-' , label='Top')
-# plt.plot( T_bot, '.-' , label='Bot' )
-# plt.plot( Q_tunnel / area_Q / 3600 , '.-', label='vel (m/s)'  )
 
-plt.legend()
+# plt.figure()
+# # plt.plot( tiempo, T_amb, '.-' , label='Amb' )
+# plt.plot( tiempo, T_top, '.-' , label='Top')
+# plt.plot( tiempo, T_bot, '.-' , label='Bot' )
+
+# # # # plt.plot( tiempo, Q_tunnel, '.-', label='Q' )
+# # # plt.plot( tiempo, Q_tunnel / area_Q / 3600 , '.-', label='vel (m/s)'  )
+
+# # # plt.plot( rec_t, np.nanmedian( rec_x, axis=(1,2)), '.-', label='rec_x' )
+
+# # plt.plot( rec_t, np.median(Q_tunnel) / (np.nanmedian( rec_x, axis=(1,2)) /1000 * 0.3) / 3600 , '.-', label='rec_x' )
+# # plt.hlines( np.median(Q_tunnel) / area_Q / 3600, 0, rec_t[-1], colors='k', linestyles='dashed', label='Area' )
+
+
+
+# # # plt.plot( T_top, '.-' , label='Top')
+# # # plt.plot( T_bot, '.-' , label='Bot' )
+# # # plt.plot( Q_tunnel / area_Q / 3600 , '.-', label='vel (m/s)'  )
+
+# plt.legend()
+# plt.show()
+
+#%%
+from matplotlib import cm
+import matplotlib.tri as mtri
+
+i = 63
+
+zg,yg,xg = rec_z.ravel(), rec_y.ravel(), rec_x[i].ravel()
+me = np.nanmean(xg)
+
+
+fig = plt.figure()
+ax = plt.axes(projection='3d')
+
+trigri = mtri.Triangulation( zg, yg)
+aa = ax.plot_trisurf( zg, yg, -xg + me, triangles=trigri.triangles, cmap=plt.cm.jet, vmax=20, vmin=-20 )
+aspect_ratio_fig(ax, zg, yg, -xg+me)
+
+ax.set_xticks([140,100,60,20])
+ax.set_zticks([])
+plt.colorbar(aa, ax=ax)
+plt.gca().invert_xaxis()
+
+# plt.savefig('./Documents/65_20.pdf',dpi=400, bbox_inches='tight')
 plt.show()
 
 
+tempt = temp_t(T_top, T_bot, rec_t, tiempo)
+mean_x = np.nanmedian(rec_x, axis=(1,2))
+ushearT = np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
+Ret = ushearT * mean_x/1000 / nu_visco(tempt)
+Re = ushearT * mean_x/1000 / nu_visco(18.8)
+# Nu = melt_rate/1000 * rho_ice * latent * length0 / (thermal_cond(tempt) * tempt )
 
+
+print(Ret[i])
+print(Re[i])
+
+print( Ret[i] * nu_visco(18.8) / 0.08 )
+
+# i = 35
+
+# fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=(8, 6))
+# surface = ax.plot_surface( rec_z, rec_y, rec_x[i],  cmap=cm.viridis,       linewidth=0,           antialiased=True )
+# ax.set_xlabel("Z Axis")
+# ax.set_ylabel("Y Axis")
+# ax.set_zlabel("X Axis")
+# fig.colorbar(surface, ax=ax, shrink=0.5, aspect=10, pad=0.1)
+# plt.show()
+
+#%%
+i = 10
+mascara = ~np.isnan(rec_f)
+
+sup_ar = area_superficial_multi_2d(rec_f, rec_z, rec_y, mascara)
+flat_a = area_superficial_multi_2d( np.ones_like(rec_f), rec_z, rec_y, mascara)
+
+# fig, ax = plt.subplots(1,2, figsize=(6,5))
+
+# s1 = ax[0].imshow( rec_f[i], extent=lims, origin='lower' )
+# s2 = ax[1].imshow( mascara[i], extent=lims, origin='lower' )
+
+# plt.colorbar(s1, ax=ax[0])
+# plt.colorbar(s2, ax=ax[1])
+# plt.show()
+
+
+plt.figure()
+# plt.plot( rec_t, sup_ar, '.-' )
+# plt.plot( rec_t, flat_a, '.-' )
+plt.plot( rec_t, sup_ar/flat_a, '.-' )
+plt.show()
+
+
+#%%
+
+dt_ct = tiempo[-1] - rec_t[-1] 
+t0 = tiempo[0]
+# dt_ct = tiempo[ends[f]] - rec_t[-1] 
+# t0 = tiempo[starts[f]]
+
+plt.figure()
+plt.plot( tiempo - t0 , T_top , '-' )
+# plt.plot( tiempo - t0 , Q_tunnel , '-' )
+plt.vlines(rec_t + dt_ct - t0, 6, 13, colors='red' )
+plt.grid()
+plt.show()
+
+
+#%%
+
+diff = np.sqrt( ( rec_x - np.nanmean(rec_x, axis=(1,2) )[:,None,None] )**2 )
+hhr = np.nanmean( diff, axis=(1,2) ) 
+
+fil = (rec_y>0)
+diff = np.sqrt( ( rec_x[:,fil] - np.nanmean(rec_x[:,fil], axis=(1) )[:,None] )**2 )
+hrr = np.nanmean( diff, axis=(1) ) 
+    
+fil = (rec_y>0) * (rec_y< 200)
+diff = np.sqrt( ( rec_x[:,fil] - np.nanmean(rec_x[:,fil], axis=(1) )[:,None] )**2 )
+hrh = np.nanmean( diff, axis=(1) ) 
+
+plt.figure()
+plt.plot( hhr, '.-')
+plt.plot( hrr, '.-')
+plt.plot( hrh, '.-')
+plt.show()
+
+#%%
+# temp =  (T_top[0] + T_bot[0])/2 
+
+
+
+temp =  (T_top[0] + T_bot[0])/2 
+tempt = temp_t(T_top, T_bot, rec_t, tiempo)
+
+gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True )
+u_shear = np.array([np.median(Q_tunnel) / area_Q / 3600] * len(rec_t))
+
+mean_x = np.nanmedian(rec_x, axis=(1,2))
+ushearT = np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
+
+Nu = melt_rate/1000 * rho_ice * latent * length0 / (thcon * temp )
+# Nu = melt_rate/1000 * rho_ice * latent * mean_x/1000 / (thcon * temp )
+Re = u_shear * 0.08 / nu_visco(temp)
+Pr = np.ones_like(Re) * nu_visco(temp) / heat_diff(temp)
+
+
+# NuT = melt_rate/1000 * rho_ice * latent * length0 / (thcon * tempt )
+NuTk = melt_rate/1000 * rho_ice * latent * length0 / (thermal_cond(tempt) * tempt )
+# NuTk = melt_rate/1000 * rho_ice * latent * mean_x/1000 / (thermal_cond(tempt) * tempt )
+
+ReT = ushearT * mean_x/1000 / nu_visco(tempt)
+# ReT = ushearT * 0.08 / nu_visco(tempt)
+PrT = nu_visco(tempt) / heat_diff(tempt)
+
+fig, ax = plt.subplots(1,3, layout='constrained', figsize=(12,4))
+
+expo = 0
+# ax[0].plot( rec_t, Nu / Pr**(expo), '.-' )
+# ax[0].plot( rec_t, NuTk / PrT**(expo), '.-' )
+# # ax[0].plot( rec_t, melt_rate, '.-' )
+
+# ax[0].plot( rec_t, mean_x*15, '.-' )
+
+ax[0].plot( Re, Nu / Pr**(expo), '.-' )
+ax[0].plot( ReT, NuTk / PrT**(expo), '.-' )
+# ax[1].set_xscale('log')
+# ax[1].set_yscale('log')
+
+ax[1].plot( rec_t, Pr, '.-' )
+ax[1].plot( rec_t, PrT, '.-' )
+ax[2].plot( rec_t, Re, '.-' )
+ax[2].plot( rec_t, ReT, '.-' )
+
+# ax[1].plot( rec_t, u_shear, '.-' )
+# ax[1].plot( rec_t, ushearT, '.-' )
+
+
+plt.show()
+
+#%%
+
+from scipy.ndimage import generic_filter
+
+i = 30
+
+t1 = time()
+ry = 50  # vertical radius
+rx = ry/5  # horizontal radius
+
+print( f"Radius in mm: ry={ry*dy}, rz={rx*dz}" )
+
+ygg, xgg = np.ogrid[-ry:ry+1, -rx:rx+1]
+footprint = (ygg/ry)**2 + (xgg/rx)**2 <= 1
+
+rec_sig = generic_filter(rec_x[i], np.nanstd, footprint=footprint )
+masca = np.isnan(rec_x[i])
+rec_sig[masca] = np.nan
+
+gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True )
+
+t2 = time()
+print(t2-t1)
+
+#%%
+
+fig, ax = plt.subplots(1,3, figsize=(10,5))
+
+s1 = ax[0].imshow( rec_x[i], extent=lims, origin='lower' )
+s2 = ax[1].imshow( rec_sig, extent=lims, origin='lower' )
+# ax[2].imshow( footprint )
+s3 = ax[2].imshow( gt[i], extent=lims, origin='lower' )
+
+plt.colorbar(s1, ax=ax[0])
+plt.colorbar(s2, ax=ax[1])
+plt.show()
+
+
+plt.figure()
+plt.scatter( rec_sig.flatten(), gt[i].flatten()  )
+plt.show()
 
 #%%
 # =============================================================================
@@ -518,10 +889,19 @@ surface = True
 channel = True
 
 
-Nus, Res = [],[]
+Nus, Res, Prs = [],[], []
 Nus_sd, Res_sd = [],[]
 
-for f in tqdm(range(len(all_folders))):
+Nus_t = []
+
+vels, times = [],[]
+velsm, velss = [],[]
+
+hrms, area_diff = [],[]
+
+# for f in tqdm(range(len(all_folders))):
+# for f in tqdm([8]):
+for f in tqdm(range(len(all_folders)-1)):
 
     path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'    
     rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, starts[f], ends[f] )
@@ -536,28 +916,76 @@ for f in tqdm(range(len(all_folders))):
     lims = [np.nanmin(rec_z), np.nanmax(rec_z),np.nanmin(rec_y),np.nanmax(rec_y)]
     dz, dy = 2.5, 0.5
     
+    filt_y = np.argmin(np.all(rec_y <= 0, axis=1)) 
+    rec_x[:,:filt_y,:] = np.nan
+    rec_f[:,:filt_y,:] = np.nan
     
-    temp = 12.3 #°C
+    # temp = 12.3 #°C
     temp =  (T_top[0] + T_bot[0])/2 
+
     
-    gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=False, integral=True )
+    gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True )
+
     Nu = melt_rate/1000 * rho_ice * latent * length0 / (thcon * temp )
-    nusd = std_melt/1000 * rho_ice * latent * length0 / (thcon * temp )
+    Nus_t.append(Nu)
     
-    area_Q = 0.3 * 0.08
+    # gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=False, integral=True )
+    # Nu = melt_rate/1000 * rho_ice * latent * length0 / (thcon * temp )
+    # nusd = std_melt/1000 * rho_ice * latent * length0 / (thcon * temp )
     
-    u_shear, std_shear = np.median(Q_tunnel) / area_Q / 3600, np.std(Q_tunnel) / area_Q / 3600
-    Re = u_shear * length0 / nu
-    resd = std_shear * length0 / nu
+    tempt = temp_t(T_top, T_bot, rec_t, tiempo)
+    mean_x = np.nanmedian(rec_x, axis=(1,2))
+    ushearT = np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
+
+    Nu = melt_rate/1000 * rho_ice * latent * length0 / (thermal_cond(tempt) * tempt )
+    Re = ushearT * mean_x/1000 / nu_visco(tempt)
+    Pr = nu_visco(tempt) / heat_diff(tempt)
     
-    Nus.append(Nu); Res.append(Re)
-    Nus_sd.append(nusd); Res_sd.append(resd)
+    # area_Q = 0.3 * 0.08
+    
+    # u_shear, std_shear = np.median(Q_tunnel) / area_Q / 3600, np.std(Q_tunnel) / area_Q / 3600
+    # # Re = u_shear * length0 / nu
+    # # resd = std_shear * length0 / nu
+    # Re = u_shear * 0.08 / nu   #use width instead of height 
+    # resd = std_shear * 0.08 / nu
+    
+    Nus.append(Nu); Res.append(Re), Prs.append(Pr)
+    # Nus_sd.append(nusd); Res_sd.append(resd)
+    
+    diff_vels = np.median(Q_tunnel) / (np.nanmedian( rec_x, axis=(1,2)) /1000 * 0.3) / 3600
+    velsm.append( np.nanmean(diff_vels) )
+    velss.append( np.nanstd(diff_vels) )
+    
+    vels.append( np.median( Q_tunnel / area_Q / 3600 ) )
+    times.append( rec_t )
+    
+    # diff = np.sqrt( ( rec_x - np.nanmean(rec_x, axis=(1,2) )[:,None,None] )**2 )`
+    # hrms.append( np.nanmean( diff, axis=(1,2) ) )
+
+    # fil = (rec_y>=0)
+    # diff = np.sqrt( ( rec_x[:,fil] - np.nanmean(rec_x[:,fil], axis=(1) )[:,None] )**2 )
+    # hrr = np.nanmean( diff, axis=(1) ) 
+
+    diff = np.sqrt( ( rec_x - np.nanmean(rec_x, axis=(1,2) )[:,None,None] )**2 )
+    hrr = np.nanmean( diff, axis=(1,2) ) 
+    if f == 2:
+        hrr[-12] = np.nan
+    hrms.append( hrr )
+    
+    mascara = ~np.isnan(rec_f)
+    sup_ar = area_superficial_multi_2d(rec_f, rec_z, rec_y, mascara)
+    flat_a = area_superficial_multi_2d( np.ones_like(rec_f), rec_z, rec_y, mascara)
+    ard = sup_ar / flat_a
+    if f == 2:
+        ard[-12] = np.nan
+    area_diff.append( ard )
     
     
-Nus,Res = np.array(Nus), np.array(Res)
-Nus_sd,Res_sd = np.array(Nus_sd), np.array(Res_sd)
+# Nus,Res = np.array(Nus), np.array(Res)
+# Nus_sd,Res_sd = np.array(Nus_sd), np.array(Res_sd)
 
 #%%
+
 
 plt.figure()
 
@@ -565,13 +993,21 @@ cmap = plt.get_cmap('viridis',9)
 
 # for i in range(len(Nus)):
 
-plt.errorbar(Res, Nus, yerr=Nus_sd, markersize=0, fmt='.', capsize=5 , alpha=0.5)
-gr = plt.scatter(Res, Nus,  c=grid_vels, cmap=cmap )
+# mNus = np.nanmean(Nus)    
+
+# plt.errorbar(Res, Nus, yerr=Nus_sd, markersize=0, fmt='.', capsize=5 , alpha=0.5)
+for i in range(9):
+    plt.plot(Res[i][3:-3], Nus[i][3:-3], '.-', alpha=0.5)
+# gr = plt.scatter(Res, Nus,  c=grid_vels[:-1], cmap=cmap )
 
 
-res = np.linspace(7e4,4.5e5, 100) 
+# res = np.linspace(7e4,4.5e5, 100) 
+# # plt.plot( Res, Res**(3/4) * .1 )
+# plt.plot( res, res**(2/3) * .3, 'k--', label=r'Nu $\propto$ Re$^{2/3}$')
+
+res = np.linspace(6e3,5e4, 100) 
 # plt.plot( Res, Res**(3/4) * .1 )
-plt.plot( res, res**(2/3) * .3, 'k--', label=r'Nu $\propto$ Re$^{2/3}$')
+plt.plot( res, res**(2/3) * 2., 'k--', label=r'Nu $\propto$ Re$^{2/3}$')
 
 plt.xscale('log')
 plt.yscale('log')
@@ -581,7 +1017,7 @@ plt.ylabel('Nu')
 
 plt.legend(loc='upper left' )
 
-plt.colorbar(gr)
+# plt.colorbar(gr)
 
 # plt.savefig('./Documents/Nu_Re.pdf',dpi=400, bbox_inches='tight')
 plt.show()
@@ -589,16 +1025,37 @@ plt.show()
 # print(u_shear, temp)
 # print(Nu, Re)
 
-# plt.figure()
-# plt.plot( tiempo, T_amb, '.-' , label='Amb' )
-# plt.plot( tiempo, T_top, '.-' , label='Top')
-# plt.plot( tiempo, T_bot, '.-' , label='Bot' )
 
-# # plt.plot( tiempo, Q_tunnel, '.-', label='Q' )
-# plt.plot( tiempo, Q_tunnel / area_Q / 3600 , '.-', label='vel (m/s)'  )
+fig,ax = plt.subplots(1,2, layout='constrained', figsize=(8,4))
 
-# plt.legend()
-# plt.show()
+color = {'0.10':'r', '0.30':'g', '0.50':'m', '0.65':'b' }
+
+expo = 1/3
+for i in range(9):
+    ax[0].plot(hrms[i][3:-3], Nus[i][3:-3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
+    # ax[0].plot(hrms[i][3:-3], Nus[i][3:-3] / hrms[i][3:-3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
+
+    # ax[1].plot(area_diff[i][3:-3], Nus[i][3:-3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
+    ax[1].plot(area_diff[i][3:-3], Nus[i][3:-3] / Nus[i][3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
+    # ax[1].plot(area_diff[i][3:-3], Nus[i][3:-3] / area_diff[i][3:-3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
+
+    # js = np.arange(len(Nus[n]))
+    # plt.plot( times[n][4:-3]/60, hrms[n][4:-3], '.-', color=color[f'{vels[n]:.2f}'] , label=f'{velsm[n]:.2f} m/s' )
+    
+# gr = plt.scatter(Res, Nus,  c=grid_vels[:-1], cmap=cmap )
+
+ax[0].set_xlabel(r'$\sigma_h$')
+ax[0].set_ylabel('Nu')
+ax[0].legend(loc='upper right' )
+
+ax[1].set_xlabel(r'$A_s / A_0$')
+ax[1].set_ylabel('Nu')
+ax[1].legend(loc='upper right' )
+
+# plt.colorbar(gr)
+
+# plt.savefig('./Documents/Nu_Re.pdf',dpi=400, bbox_inches='tight')
+plt.show()
 
 
 #%%
@@ -612,6 +1069,69 @@ plt.plot( rec_t/60, rec_back, '.' )
 # plt.plot( rec_t/60, avh + rec_back, '.-'  )
 
 # plt.show()
+
+#%%
+
+plt.figure()
+
+color = {'0.10':'r', '0.30':'g', '0.50':'m', '0.65':'b' }
+
+# for n in [6,7,8]:
+for n in range(9):
+
+    js = np.arange(len(Nus_t[n]))
+    plt.plot( times[n][4:-3]/60, Nus_t[n][4:-3], '.-', color=color[f'{vels[n]:.2f}'] , label=f'{velsm[n]:.2f} m/s' )
+
+plt.xlabel('t (min)')
+plt.ylabel('Nu(t)')
+
+# plt.yscale('log')
+
+plt.legend()
+plt.grid()
+plt.show()
+
+#%%
+plt.figure()
+
+color = {'0.10':'r', '0.30':'g', '0.50':'m', '0.65':'b' }
+
+# for n in [4]:
+for n in range(9):
+# for n in range(6,8):
+
+    js = np.arange(len(Nus[n]))
+    # plt.plot( times[n][4:-3]/60, hrms[n][4:-3], '.-', color=color[f'{vels[n]:.2f}'] , label=f'{velsm[n]:.2f} m/s' )
+    plt.plot( times[n][4:-3]/60, area_diff[n][4:-3] , 's-', color=color[f'{vels[n]:.2f}'] , label=f'{velsm[n]:.2f} m/s' )
+
+plt.xlabel('t (min)')
+plt.ylabel(r'$\sigma_{h}$')
+
+# plt.yscale('log')
+
+plt.legend()
+plt.grid()
+plt.show()
+
+#%%
+
+diff = np.sqrt( ( rec_x - np.nanmean(rec_x, axis=(1,2) )[:,None,None] )**2 )
+
+fil = (rec_y>0)
+
+plt.figure()
+# plt.gca().invert_yaxis()
+# plt.imshow( rec_x[20], extent=( np.min(rec_z),np.max(rec_z), np.max(rec_y),np.min(rec_y) )  )
+plt.imshow( diff[20], extent=( np.min(rec_z),np.max(rec_z), np.max(rec_y),np.min(rec_y) )  )
+# plt.axis('equal')
+
+# plt.plot(rec_t,  np.nanmean( diff, axis=(1,2) ), '.-' )
+
+plt.colorbar()
+plt.show()
+
+
+
 
 
 #%%
@@ -1479,3 +1999,8 @@ plt.show()
 
 
 #%%
+
+
+
+
+

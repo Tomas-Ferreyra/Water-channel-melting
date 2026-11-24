@@ -161,7 +161,7 @@ def laser_edges(im, sigma=20):
     smi, sma = subpixel(normalize(dg), imi, ili), subpixel(normalize(dg), ima, ili)
     return ili, smi, sma
 
-def laser_edges_fast(im, sigma=20):
+def laser_edges_fast(im, sigma=20, prominence=0.1):
     ny, nx = im.shape
 
     g2 = gaussian(im, sigma)
@@ -181,8 +181,8 @@ def laser_edges_fast(im, sigma=20):
     for j in range(ny):
         row = dg[j]
 
-        pmax, _ = _fp(row, height=mdg+0.1, prominence=0.1)
-        pmin, _ = _fp(-row, height=-mdg+0.1, prominence=0.1)
+        pmax, _ = _fp(row, height=mdg+0.1, prominence=prominence)
+        pmin, _ = _fp(-row, height=-mdg+0.1, prominence=prominence)
 
         ima[j] = pmax[0] if pmax.size else _argmax(row)
         imi[j] = pmin[0] if pmin.size else _argmin(row)
@@ -603,7 +603,7 @@ def pixel_filtering(xi, xc, ili, extra_tol=10, filter_1=720, filter_2=22, filter
 #%%
 # 30 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/26-05-26/'
+path = '/Volumes/Ice blocks/Scan water channel/26-07-09/'
 
 data = np.load(path+'calibration_data.npz')
 angle_xy, angle_yz, angle_xz = float(data['arr_3']), float(data['arr_4']), float(data['arr_5'])
@@ -613,17 +613,17 @@ cal_do = data['arr_1']
 wall_distance = float(data['arr_2'])
 
 
-dvids = [cv2.VideoCapture( path + 'Camera down/DSC_0029.MOV'), # starts 5679
+dvids = [cv2.VideoCapture( path + 'Camera down/DSC_3217.MOV'), # starts 4878
          # cv2.VideoCapture( path + 'Camera down/DSC_9526.MOV'), 
          # cv2.VideoCapture( path + 'Camera down/DSC_9527.MOV'), 
          # cv2.VideoCapture( path + 'Camera down/DSC_9528.MOV'), 
-         # cv2.VideoCapture( path + 'Camera down/DSC_9529.MOV'), # ends 29250
+         # cv2.VideoCapture( path + 'Camera down/DSC_9529.MOV'), # ends 30449
          ]
 
-uvids = [cv2.VideoCapture( path + 'Camera up/DSC_0042.MOV'), # starts 5573
-         cv2.VideoCapture( path + 'Camera up/DSC_0043.MOV'),   
+uvids = [cv2.VideoCapture( path + 'Camera up/DSC_7130.MOV'), # starts 4933
+         cv2.VideoCapture( path + 'Camera up/DSC_7131.MOV'),   # ends 293 
          # cv2.VideoCapture( path + 'Camera up/DSC_6013.MOV'),   
-         # cv2.VideoCapture( path + 'Camera up/DSC_6014.MOV')  # ends 1370 
+         # cv2.VideoCapture( path + 'Camera up/DSC_6014.MOV')  
          ]
 
 dlens = [0]+[int(dvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(dvids))]
@@ -634,42 +634,42 @@ ulens = [0]+[int(uvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(uvid
 # Visualize some frames, useful for finding led position
 l = 0
 
-for i in range(29252,29254,1):
-    dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
+# for i in range(0,2,1):
+    # dvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)      
     
     # im = np.array( dvids[l].read()[1] )[:,:,::-1]
-    im = np.array( dvids[l].read()[1] )[150:210,520:575,::-1]
-    # im = np.array( dvids[l].read()[1] )[:,1500:2700,::-1]
+    # # im = np.array( dvids[l].read()[1] )[80:120,1140:1190,::-1]
+    # # im = np.array( dvids[l].read()[1] )[:,1500:2700,::-1]
+    # # im = grayscale_im(im)
+    # im = im[:,:,0]
+
+    # plt.figure()
+    # plt.imshow(im, cmap='gray') #, vmax=20) 
+    # plt.title(i)
+    # plt.show()
+    # print(i, np.mean(im), np.median(im))
+
+for i in range(0,2,1):
+    uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
+    
+    im = np.array( uvids[l].read()[1] )[:,:,::-1]
+    # im = np.array( uvids[l].read()[1] ) [1920:1970,1370:1430,::-1] 
+    # im = np.array( uvids[l].read()[1] ) [:,1400:2600,::-1] 
     # im = grayscale_im(im)
     im = im[:,:,0]
 
     plt.figure()
-    plt.imshow(im, cmap='gray') #, vmax=20) 
+    plt.imshow(im, cmap='gray', vmax=20) 
     plt.title(i)
     plt.show()
     print(i, np.mean(im), np.median(im))
-
-# for i in range(1350,1352,1):
-#     uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
-    
-#     im = np.array( uvids[l].read()[1] )[:,:,::-1]
-#     # im = np.array( uvids[l].read()[1] ) [1960:2020,905:960,::-1] 
-#     # im = np.array( uvids[l].read()[1] ) [:,1400:2600,::-1] 
-#     # im = grayscale_im(im)
-#     im = im[:,:,0]
-
-#     plt.figure()
-#     plt.imshow(im, cmap='gray') #, vmax=20) 
-#     plt.title(i)
-#     plt.show()
-#     print(i, np.mean(im), np.median(im))
 
 
 
 #%%
 # Led finding
-d_led = [150,210,520,575]
-u_led = [1960,2020,905,960]
+d_led = [80,120,1140,1190]
+u_led = [1920,1970,1370,1430]
 
 u_mes, d_mes = [],[]
 
@@ -708,14 +708,14 @@ plt.show()
 # Finding frame where to start reconstruction (from led blinking)
 N = 60
 shift = 0
-endd = 29250 - 60 # np.sum(dlens) # 83090 + 0 # np.sum(dlens)
-endu = 29150 - 60 # np.sum(ulens) # 83062 + 0 # np.sum(ulens)
+endd = 30449 - 0 # np.sum(dlens) # 83090 + 0 # np.sum(dlens)
+endu = 30503 - 0 # np.sum(ulens) # 83062 + 0 # np.sum(ulens)
 
 d_cuts, u_cuts = np.cumsum(dlens), np.cumsum(ulens)
 
-d_missing, d_led, d_frame, d_time = count_missing_frames_with_video_lengths(d_mes, dlens[:], [5679, endd], fps=30, 
+d_missing, d_led, d_frame, d_time = count_missing_frames_with_video_lengths(d_mes, dlens[:], [4878, endd], fps=30, 
                                                                             threshold=50, divisor=2, missing_cycles=None )
-u_missing, u_led, u_frame, u_time = count_missing_frames_with_video_lengths(u_mes, ulens[:], [5573, endu], fps=30, 
+u_missing, u_led, u_frame, u_time = count_missing_frames_with_video_lengths(u_mes, ulens[:], [4933, endu], fps=30, 
                                                                             threshold=50, divisor=2 )
 print('Down')
 d_frame, d_vid, d_time = is_reconstructable(d_frame, dlens, N, d_time, shift=shift, fps=30 )
@@ -823,13 +823,13 @@ u_time = (u_times - u_times[0])[u_time]
 
 #%%
 # testing camera down laser recognition
-i = -0 + 28329
-disp = 13
+i = -0 + 25399 
+disp = 33
 l = 0
 first_graph = 0
 second_graph = 1
 
-lims = [None,None,1400,2600]
+lims = [None,None,1850,3370]
 filter_2 = 22
 filter_3 = 25
 
@@ -843,7 +843,7 @@ top,bot = int(lims[0] or 0), ny-int(lims[1] or ny)
 t1 = time()
 im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
 # ili, smi, sma = laser_edges(im, sigma=20)
-ili, smi, sma = laser_edges_fast(im, sigma=20)
+ili, smi, sma = laser_edges_fast(im, sigma=20, prominence=0.3)
 if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
 
 fma = fit_wall_pixels(ili, sma)
@@ -871,26 +871,28 @@ if first_graph:
 
 if second_graph:
     plt.figure()
-    plt.imshow( grayscale_im(imo), cmap='gray', vmax = 40 )
+    plt.imshow( grayscale_im(imo), cmap='gray', vmax = 10 )
     plt.plot(smi, ili,'b-',alpha=0.5)
     plt.plot(sma, ili,'r-',alpha=0.5)
     plt.plot(fma, ili,'y--',alpha=0.5)
     plt.plot(smi[np.isnan(xii)[top:ny-bot]], ili[np.isnan(xii)[top:ny-bot]],'m.',alpha=0.5)
     plt.show()
+    
+# to much noise past 23601 d_frame, I probably can't use anything from there onwards
 
 #%%
 # testing camera up laser recognition
-i = -0 + 7547
-disp = 39
+i = -0 + 5678
+disp = 19
 l = 0
 first_graph = 0
 second_graph = 1
 
-lims = [None,None,1700,2950]
+lims = [None,None,2100,3530]
 extra_tol = 15
-filter_1 = 520
-filter_2 = 30
-filter_3 = 35
+filter_1 = 500
+filter_2 = 22
+filter_3 = 25
 
 
 uvids[l].set(cv2.CAP_PROP_POS_FRAMES, i+disp)
@@ -900,7 +902,8 @@ top,bot = int(lims[0] or 0), ny-int(lims[1] or ny)
 
 im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
 # ili, smi, sma = laser_edges(im, sigma=20)
-ili, smi, sma = laser_edges_fast(im, sigma=20)
+ili, smi, sma = laser_edges_fast(im, sigma=20, prominence=0.3)
+
 if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
 fma = fit_wall_pixels(ili, sma)
 ili = ili+top
@@ -929,7 +932,7 @@ if first_graph:
 
 if second_graph:
     plt.figure()
-    plt.imshow( grayscale_im(imo), cmap='gray', vmax = 40 )
+    plt.imshow( grayscale_im(imo), cmap='gray', vmax = 20 )
     plt.plot(smi, ili,'b-',alpha=0.5)
     plt.plot(sma, ili,'r-',alpha=0.5)
     plt.plot(fma, ili,'y--',alpha=0.5)
@@ -952,9 +955,10 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
     gdo_y = gdo.create_dataset('y', (nt,ny*N), dtype='f') 
     gdo_z = gdo.create_dataset('z', (nt,ny*N), dtype='f') 
     
-    lims = [None,None,1400,2600]
+    lims = [None,None,1850,3370]
     filter_2 = 22
     filter_3 = 25
+
 
     top,bot = int(lims[0] or 0), ny-int(lims[1] or ny) 
     gdo_t[:] = d_time
@@ -970,7 +974,7 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
             
             im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
             # ili, smi, sma = laser_edges(im, sigma=20)
-            ili, smi, sma = laser_edges_fast(im, sigma=20)
+            ili, smi, sma = laser_edges_fast(im, sigma=20, prominence=0.3)
             if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
             fma = fit_wall_pixels(ili, sma)
             ili = ili+top
@@ -996,11 +1000,11 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
     gup_y = gup.create_dataset('y', (nt,ny*N), dtype='f') 
     gup_z = gup.create_dataset('z', (nt,ny*N), dtype='f') 
     
-    lims = [None,None,1700,2950]
+    lims = [None,None,2100,3530]
     extra_tol = 15
-    filter_1 = 520
-    filter_2 = 30
-    filter_3 = 35
+    filter_1 = 500
+    filter_2 = 22
+    filter_3 = 25
 
     top,bot = int(lims[0] or 0), ny-int(lims[1] or ny) 
     gup_t[:] = u_time
@@ -1016,7 +1020,7 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'w') as f:
 
             im = grayscale_im(imo[lims[0]:lims[1],lims[2]:lims[3]])
             # ili, smi, sma = laser_edges(im, sigma=20)
-            ili, smi, sma = laser_edges_fast(im, sigma=20)
+            ili, smi, sma = laser_edges_fast(im, sigma=20, prominence=0.3)
             if lims[2]: smi,sma = smi+lims[2], sma+lims[2]
             fma = fit_wall_pixels(ili, sma)
             ili = ili+top
@@ -1048,7 +1052,7 @@ with h5py.File(path + 'reconstructed_profile.hdf5', 'r') as f:
     dow_x = f['Down/x'][:]
     dow_y = f['Down/y'][:]
     dow_z = f['Down/z'][:]
-#%
+
 
 #%%
 
@@ -1184,12 +1188,12 @@ def get_median_angles(angles,stops,restarts):
 
 # at 24 fps
 
-path = '/Volumes/Ice blocks/Scan water channel/26-05-26/' # this one has 24 fps
+path = '/Volumes/Ice blocks/Scan water channel/26-07-09/' # this one has 24 fps
 
-bvids = [cv2.VideoCapture( path + 'Camera back/DSC_6897.MOV'), #starts 6661 
-         cv2.VideoCapture( path + 'Camera back/DSC_6898.MOV'), 
-         cv2.VideoCapture( path + 'Camera back/DSC_6899.MOV'), 
-         cv2.VideoCapture( path + 'Camera back/DSC_6900.MOV'), #ends 2730
+bvids = [cv2.VideoCapture( path + 'Camera back/_DSC5179.MOV'), #starts 4332 
+         # cv2.VideoCapture( path + 'Camera back/DSC_6898.MOV'), 
+         # cv2.VideoCapture( path + 'Camera back/DSC_6899.MOV'), 
+         # cv2.VideoCapture( path + 'Camera back/_DSC5179.MOV'), #ends 24785
           ]
 
 blens = [0]+[int(bvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(bvids))]
@@ -1198,16 +1202,16 @@ blens = [0]+[int(bvids[i].get(cv2.CAP_PROP_FRAME_COUNT)) for i in range(len(bvid
 # Find led to get times
 
 l = 0
-for i in range(1430,1450,1):
+for i in range(4330,4335,1):
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
 
-    # im = np.array(bvids[l].read()[1])[:,:,::-1] 
-    im = np.array(bvids[l].read()[1])[685:720,3525:3565,::-1] 
+    im = np.array(bvids[l].read()[1])[:,:,::-1] 
+    # im = np.array(bvids[l].read()[1])[380:400,1770:1795,::-1] 
     # im = np.array(bvids[l].read()[1])[:,:,::-1] #[1540:1595,880:930,::-1] #[150:2100,750:2800,::-1]
-    im = im[:,:,2]
+    im = im[:,:,1]
     
     plt.figure()
-    plt.imshow(im, vmax=10)
+    plt.imshow(im) #, vmax=10)
     # plt.title('R, {}, {:.2f}'.format(i,np.mean(im[:,:,0])))
     # plt.title('{}, {:.2f}'.format(i,np.mean(im[:,:,0])))
     plt.title(i)
@@ -1226,12 +1230,12 @@ for i in range(1430,1450,1):
 
 #%%
 
-b_led = [685,720,3525,3565]
+b_led = [380,400,1770,1795]
 
 b_mes = []
 
-start = 0
-end = 2735
+start = 4332
+end = 24785
 
 for l in range(len(bvids)):
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -1251,14 +1255,14 @@ b_mes = np.array(b_mes)
 
 #%%
 
-threshold = 100
+threshold = 60
 plt.figure()
 plt.plot( b_mes , '.-')
 plt.hlines( threshold, 0, len(b_mes), color='g' )
 plt.grid()
 plt.show()
 
-missing_frames, _,_,_ = count_missing_frames_with_video_lengths( b_mes, blens, [start,blens[1]+end], fps=30, threshold=threshold, divisor=1 )
+missing_frames, _,_,_ = count_missing_frames_with_video_lengths( b_mes, blens, [start,blens[1]+end], fps=24, threshold=threshold, divisor=1 )
 
 missing_frames
 #%%
@@ -1270,22 +1274,23 @@ missing_frames
 #%%
 # Finding angle of handle
 
-l=1
+l=0
 # for i in range(4000,20000,1000):
 # for i in range(9709, 9630-1, -10):
-for i in [8000]:
+# for i in [3500,7175,7207,7263,8250,14100,18900,20162]:
+for i in [5000]:
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
 
-    im = np.array(bvids[l].read()[1])[:,:,::-1] 
-    # im = np.array(bvids[l].read()[1]) [50:1000,400:1450,::-1]
+    # im = np.array(bvids[l].read()[1])[:,:,::-1] 
+    im = np.array(bvids[l].read()[1])[60:1050,500:1500,::-1]
     # im = np.array(bvids[l].read()[1])[50:1050,400:1500,1]
 
-    g = gaussian(im,20)
-    g[g>0.1] = 0
-    g = normalize(g)
+    g = gaussian(im,5)
+    # g[g>0.1] = 0
+    # g = normalize(g)
     
     plt.figure()
-    plt.imshow( g , vmax= .5 )
+    plt.imshow( g , vmax= 1.5 )
     plt.title(i)
     plt.show()    
     
@@ -1296,32 +1301,35 @@ for i in [8000]:
 
 #%%
 # l = 0
-blims = [None,None,None,None]
-blims = [50,2100,800,2900]
+# blims = [None,None,None,None]
+blims = [60,1050,500,1500]
 
 pos = []
 
-for i in [7000,8000,9000]:
+for i in [3500,7175,7207,7263,8250,14100,18900,20162]:
 # for i,l in zip([5000,10000,15000,25000,30000,0,5000],[0,0,0,0,0,1,1]):
+
     bvids[l].set(cv2.CAP_PROP_POS_FRAMES, i)
     im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],::-1]
-    # im = normalize( gaussian( im[:,:,0], 2) )
+    im = normalize( gaussian( im[:,:,0], 2) )
 
-    plt.figure()
-    plt.imshow( im[:,:,0] )
-    plt.show()
+    # im = np.array(bvids[l].read()[1])[blims[0]:blims[1],blims[2]:blims[3],2]
+    # plt.figure()
+    # plt.imshow( im )
+    # # plt.imshow( im[:,:,0] )
+    # plt.show()
 
-    # pos.append(pick_points_on_figure(im, i))
+    pos.append(pick_points_on_figure(im, i))
     
-# pos = (np.array(pos))[:,:,0]
-# fil, fit_val = circle_filter(pos, im)
+pos = (np.array(pos))[:,:,0]
+fil, fit_val = circle_filter(pos, im)
 
-# fit_val
+fit_val
 #%%
 
-starts = [6661,0,0,0]
-ends = [blens[1]-1, blens[2]-1, blens[3]-1, 2735]
-hand_lim = [50,2100,800,2900]
+starts = [4332] # [4302, 0,0,0]
+ends = [24785] # [blens[1]-1, blens[2]-1, blens[3]-1, 2735]
+hand_lim = [60,1050,500,1500]
 
 t1 = time()
 
@@ -1406,7 +1414,7 @@ def circle_center(val):
     
     return np.nansum( np.abs( xte**2 / div + yte**2 / div - val[0]**2 / div ) )
     
-ll = least_squares(circle_center, [700,1100,800])
+ll = least_squares(circle_center, [400,500,500])
 print(ll.x)
 
 def angles(cxs, cys, vals ):
@@ -1430,10 +1438,10 @@ plt.show()
 
 all_fr = np.arange(len(cxs))
 all_cx, all_cy = np.copy(cxs), np.copy(cys)
-all_cx[mfr_1-4017], all_cy[mfr_1-4017] = mcx_1, mcy_1
-all_cx[mfr_2+blens[1]-4017], all_cy[mfr_2+blens[1]-4017] = mcx_2, mcy_2
+# all_cx[mfr_1-4017], all_cy[mfr_1-4017] = mcx_1, mcy_1
+# all_cx[mfr_2+blens[1]-4017], all_cy[mfr_2+blens[1]-4017] = mcx_2, mcy_2
 
-all_cx[32411], all_cy[32411] = np.nan, np.nan
+# all_cx[32411], all_cy[32411] = np.nan, np.nan
 
 # all_fr, all_cx, all_cy = all_fr[~np.isnan(all_cx)], all_cx[~np.isnan(all_cx)], all_cy[~np.isnan(all_cy)]
 
@@ -1459,7 +1467,7 @@ m_frame = [0,0,0,0]
 btime = np.empty(0)
 for i in range(len(starts)):
     timeb = np.arange( starts[i], ends[i]  )
-    timeb = ( timeb-timeb[0] + m_frame[i] + len(btime) ) / 30 #24
+    timeb = ( timeb-timeb[0] + m_frame[i] + len(btime) ) / 24 #24
     btime = np.concatenate( (btime,timeb) )
 
 fil = np.isnan(ang)
@@ -2332,16 +2340,17 @@ def aspect_ratio_fig(ax, xdata, ydata, zdata ):
     ax.set_ylim(lyi-5,lyd+5)
 
 
-all_folders = ['25-08-07','25-09-29','25-10-24','25-11-17','25-12-12','26-01-27','26-02-17','26-03-05','26-05-26' ]
+# all_folders = ['25-08-07','25-09-29','25-10-24','25-11-17','25-12-12','26-01-27','26-02-17','26-03-05','26-05-26' ]
+all_folders = ['26-07-09']
 
 #%%
 sigmas = [5.,3.]
 dz, dy = 2.5, 0.5
 dist = 4.
 
-do = 0
+do = 1
 
-f = 8
+f = 0
 print(all_folders[f])
 path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
 
@@ -2420,7 +2429,7 @@ sigmas = [5.,3.]
 dz, dy = 2.5, 0.5
 dist = 4.
 
-f = 8
+f = 0
 print(all_folders[f])
 path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
 
@@ -2434,7 +2443,7 @@ zn,yn = np.meshgrid(zn,yn)
 
 t1 = time()
 
-i = 5
+i = 25
 filt = ~np.isnan(top_x[i])
 filb = ~np.isnan(bot_x[i])
 

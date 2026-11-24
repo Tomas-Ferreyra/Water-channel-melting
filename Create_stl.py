@@ -353,7 +353,7 @@ from scipy.spatial import cKDTree
 from scipy.signal.windows import tukey
 import matplotlib.tri as mtri
 
-f = 7
+f = 0
 print(all_folders[f])
 path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
 surface = True
@@ -362,9 +362,9 @@ top_t, top_x, top_y, top_z, bot_t, bot_x, bot_y, bot_z, back_t, back_x, tiempo, 
 
 
 t1 = time()
- # i = 54 #f=0
+i = 59 #f=0
 # i = 45 #f=7 
-i = 2 #f=5
+# i = 2 #f=5
 filt = ~np.isnan(top_x[i])
 filb = ~np.isnan(bot_x[i])
 
@@ -377,18 +377,18 @@ sigmas = [10.,3.]
 xdata = np.concatenate( [top_x[i][filt],bot_x[i][filb]] )
 ydata = np.concatenate( [top_y[i][filt],bot_y[i][filb]] )
 zdata = np.concatenate( [top_z[i][filt],bot_z[i][filb]] )
-# zdata, ydata, xdata = zdata - np.nanmean(zdata), ydata - np.nanmean(ydata), xdata - np.nanmean(xdata)  
 
-# zrot, yrot, xrot, Rm = rotate_to_xy_plane(zdata, ydata, xdata)
+zdata, ydata, xdata = zdata - np.nanmean(zdata), ydata - np.nanmean(ydata), xdata - np.nanmean(xdata)  
+zrot, yrot, xrot, Rm = rotate_to_xy_plane(zdata, ydata, xdata)
 
-dz, dy = 1., 1. #0.25, 0.25
+dz, dy = 0.5, 0.5 #0.25, 0.25
 zb, yb = np.arange(-154,154+dz, dz), np.arange(-359,359+dy, dy)
 zb,yb = np.meshgrid(zb,yb)
 
 t1 = time()
 
-# gg_g = interpolate_gaussian_stl( xrot, yrot, zrot, zb, yb, dist_threshold=200, sigmas=sigmas )
-# zn, yn, gg = zb, yb, gg_g
+gg_g = interpolate_gaussian_stl( xrot, yrot, zrot, zb, yb, dist_threshold=200, sigmas=sigmas )
+zn, yn, gg = zb, yb, gg_g
 
 t2 = time()
 # print(t2-t1)
@@ -396,14 +396,14 @@ t2 = time()
 
 plt.figure()
 
-ss = plt.scatter( zdata, ydata, s=2, c=xdata )
-# ss = plt.scatter( zrot, yrot, s=2, c=xrot )
-cbar = plt.colorbar(ss, location='bottom', aspect=40)
+# ss = plt.scatter( zdata, ydata, s=2, c=xdata )
+# # ss = plt.scatter( zrot, yrot, s=2, c=xrot )
+# cbar = plt.colorbar(ss, location='bottom', aspect=40)
 
-# si = plt.scatter( zn, yn, zorder=-1, s=4, c=gg, vmin=np.nanmin(xdata), vmax=np.nanmax(xdata) )
-# cbar = plt.colorbar(si, location='bottom', aspect=40)
+si = plt.scatter( zn, yn, zorder=-1, s=4, c=gg, vmin=np.nanmin(xdata), vmax=np.nanmax(xdata) )
+cbar = plt.colorbar(si, location='bottom', aspect=40)
 
-# plt.axis('equal')
+plt.axis('equal')
 plt.xlabel(r'$x$ (mm)')
 plt.ylabel(r'$y$ (mm)')
 plt.show()
@@ -442,23 +442,21 @@ fullprof = bu * gg + (1-bu) * ones
 
 # plt.show()
 
-# fig = plt.figure()
-# ax = plt.axes(projection='3d')
+fig = plt.figure()
+ax = plt.axes(projection='3d')
 
-# zg,yg,xg = zn.ravel(), yn.ravel(), fullprof.ravel()
-# trigri = mtri.Triangulation( zg, yg)
-# ax.plot_trisurf( zg, yg, -xg, triangles=trigri.triangles, cmap=plt.cm.jet )
-# aspect_ratio_fig(ax, zg, yg, -xg)
+zg,yg,xg = zn.ravel(), yn.ravel(), fullprof.ravel()
+trigri = mtri.Triangulation( zg, yg)
+ax.plot_trisurf( zg, yg, -xg, triangles=trigri.triangles, cmap=plt.cm.jet )
+aspect_ratio_fig(ax, zg, yg, -xg)
 
-# plt.show()
+plt.show()
 
 plt.figure()
 plt.imshow( -fullprof )
 plt.show()
 
 #%%
-
-from stl import mesh
 
 
 bottom = np.ones_like(fullprof) * (-100.)
@@ -487,7 +485,7 @@ ini = loop_faces(ini, cube, side3, faces_side3 )
 ini = loop_faces(ini, cube, side4, faces_side4 )
 
 save_path = './Documents/'
-name = '65vel_03grid(1)_smallest.stl'
+name = '50vel_05grid_small.stl'
 
 cube.save( save_path + name )
 
