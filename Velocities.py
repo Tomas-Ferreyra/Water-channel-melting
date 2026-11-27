@@ -425,7 +425,7 @@ def distance( preal, precov ):
 
 
 #%%
-# f0
+# f0, f6 (angles), f5 perpend
 exp = 'f0'
 main_folder = '/Volumes/PTV channel/'+exp
 files_folder = '/Volumes/PTV channel/'+exp+'/'+exp+'_C001H*' 
