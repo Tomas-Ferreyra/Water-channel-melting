@@ -18,6 +18,8 @@ import matplotlib.tri as mtri
 from matplotlib import cm
 from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import proj3d
+from matplotlib.collections import LineCollection
+import matplotlib.patheffects as pe
 import cmcrameri
 
 from tqdm import tqdm
@@ -26,8 +28,10 @@ from time import time
 import scipy.ndimage as snd
 from scipy.spatial import Delaunay
 from scipy.ndimage import minimum_filter
-from scipy.optimize import curve_fit, least_squares
+from scipy.optimize import curve_fit, least_squares, linear_sum_assignment
 from scipy.stats import linregress
+from scipy.signal import correlate2d, correlate, find_peaks
+
 
 from skimage.feature import peak_local_max
 from skimage.filters import gaussian, roberts, sobel
@@ -652,6 +656,312 @@ def add_bounding_box(ax, x, y, z, L=10, color='black', lw=0.8):
     return (xmin, xmax), (ymin, ymax), (zmin, zmax)
 
 
+def preprocess(rec_x):
+    data = rec_x.copy().astype(float)
+    for t in range(data.shape[0]):
+        frame = data[t]
+        frame -= np.nanmean(frame)
+        norm = np.sqrt(np.nanmean(frame**2))
+        if norm > 0:
+            frame /= norm
+    return data
+
+def spatiotemporal_correlation(rec_x, max_lag=None, mode='same'):
+
+    nt, ny, nx = rec_x.shape
+    if max_lag is None: max_lag = nt - 1
+
+    if mode == 'full': shape = (2*ny - 1, 2*nx - 1)
+    elif mode == 'same': shape = (ny, nx)
+    else: print('Full or same for mode')
+    valid_frames = ~np.all(np.isnan(rec_x), axis=(1, 2))
+
+    correlations = []
+    for dt in tqdm(range(1, max_lag + 1)):
+        C = np.zeros(shape)
+        n_pairs = 0
+        for t in range(nt - dt):
+            if not (valid_frames[t] and valid_frames[t + dt]): continue
+            C += correlate( rec_x[t], rec_x[t + dt], mode=mode, method='fft' )
+            n_pairs += 1
+        
+        if n_pairs > 0: C /= n_pairs
+        else: C[:] = np.nan
+
+        # C /= (nt - dt)
+        correlations.append(C)
+
+    return np.array(correlations)
+
+def largest_valid_window(valid):
+    ny, nx = valid.shape
+    heights = np.zeros(nx, dtype=int)
+    best_area = 0
+    best_window = None
+    for y in range(ny):
+        heights = np.where(valid[y], heights + 1, 0)
+        stack = []
+        for x in range(nx + 1):
+            h = heights[x] if x < nx else 0
+            start = x
+            while stack and stack[-1][1] > h:
+                start, height = stack.pop()
+                area = height * (x - start)
+                if area > best_area:
+                    best_area = area
+                    best_window = ( y - height + 1, y + 1, start, x )
+            stack.append((start, h))
+    return best_window
+
+def get_displacements(Corr, ny, nx, mode='full'):
+    if mode == 'full':
+        y_center = ny - 1
+        x_center = nx - 1
+
+    elif mode == 'same':
+        y_center = ny // 2
+        x_center = nx // 2
+
+    else: raise ValueError("mode must be 'full' or 'same'")
+
+    displacements = []
+    for C in Corr:
+        if not np.any(np.isfinite(C)):
+            displacements.append([np.nan, np.nan])
+            continue
+
+        iy, ix = np.unravel_index( np.nanargmax(C), C.shape )
+        dx = ix - x_center
+        dy = iy - y_center
+        displacements.append([dx, dy])
+
+    return np.array(displacements)
+
+
+def get_minmax(rec_z, rec_y, rec_x, rec_back, sigmas, slope_v='all', tol = 1e-8 ):
+    tsig, ysig, zsig = sigmas
+    rec_xg = smooth_reconstruction( rec_x, rec_back, sigmas, slope_v)
+    
+    gt, gy, gz = np.gradient(rec_xg, rec_t, rec_y[:,0], rec_z[0], edge_order=2)
+    _, gyy, gyz = np.gradient(gy, rec_t, rec_y[:,0], rec_z[0], edge_order=2)
+    _, gzy, gzz = np.gradient(gz, rec_t, rec_y[:,0], rec_z[0], edge_order=2)
+    
+    grad_norm = np.sqrt(gy**2 + gz**2)
+    thing = grad_norm < 0.05
+    
+    labels = np.zeros_like(thing, dtype=int)
+    n_labels = []
+    stationary_points = []    
+    for i in tqdm(range(thing.shape[0])):
+        lab, n = snd.label( thing[i], structure=np.ones((3,3)) )
+        labels[i] = lab
+        n_labels.append(n)
+    
+        points = []
+        for j in range(1, n_labels[i] + 1):
+            iy, iz = np.where(lab == j)
+            k = np.argmin(grad_norm[i, iy, iz])
+            points.append((iy[k], iz[k]))
+        stationary_points.append(np.array(points))
+        
+    minima = []
+    maxima = []
+    saddles = []
+    for i, points in enumerate(stationary_points):
+        min_i = []
+        max_i = []
+        saddle_i = []    
+        for iy, iz in points:
+            H = np.array([ [gyy[i, iy, iz], gyz[i, iy, iz]], [gzy[i, iy, iz], gzz[i, iy, iz]] ])    
+            H = 0.5 * (H + H.T)
+            eig = np.linalg.eigvalsh(H)
+    
+            if np.all(eig > tol): min_i.append((iy, iz))
+            elif np.all(eig < -tol): max_i.append((iy, iz))
+            elif eig[0] < -tol and eig[1] > tol: saddle_i.append((iy, iz))
+    
+        minima.append(np.array(min_i, dtype=int).reshape(-1, 2))
+        maxima.append(np.array(max_i, dtype=int).reshape(-1, 2))
+        saddles.append(np.array(saddle_i, dtype=int).reshape(-1, 2))
+    
+    return minima, maxima
+
+
+def track_extrema(points, min_length=10, max_gap=2, max_dist_y=5.0, max_dist_z=5.0):
+    """
+    Track minima or maxima over time.
+
+    Parameters
+    ----------
+    points : list of arrays
+        points[i] contains (iy, iz) coordinates at time i.
+    min_length : int
+        Minimum number of detections for a valid track.
+    max_gap : int
+        Maximum number of missing frames allowed between detections.
+    max_distance : float
+        Maximum allowed displacement per frame, in grid indices.
+
+    Returns
+    -------
+    tracks : list of dict
+        Each track contains:
+          'frames': time indices
+          'positions': (iy, iz) positions
+    """
+
+    active = []
+    finished = []
+
+    for t, detections in enumerate(points):
+        detections = np.asarray(detections).reshape(-1, 2)
+
+        # Remove tracks that have been missing too long
+        still_active = []
+
+        for tr in active:
+            if t - tr['last_frame'] <= max_gap + 1: still_active.append(tr)
+            else: finished.append(tr)
+
+        active = still_active
+
+        # No detections at this time
+        if len(detections) == 0: continue
+
+        if len(active) == 0:
+            for p in detections:
+                active.append({ 'frames': [t], 'positions': [p.astype(float)], 'last_frame': t })
+            continue
+
+        # Cost matrix between active tracks and new detections
+        cost = np.full((len(active), len(detections)), 1e9)
+        for j, tr in enumerate(active):
+
+            # Estimate velocity from last two detections
+            last_p = tr['positions'][-1]
+            last_t = tr['frames'][-1]
+
+            if len(tr['positions']) >= 2:
+                prev_p = tr['positions'][-2]
+                prev_t = tr['frames'][-2]
+                velocity = (last_p - prev_p) / (last_t - prev_t)
+            else:
+                velocity = np.zeros(2)
+            
+            dt = t - last_t
+            predicted = last_p + velocity * dt
+
+            # Independent distance constraints
+            dy = np.abs(detections[:, 0] - predicted[0])
+            dz = np.abs(detections[:, 1] - predicted[1])
+            valid = ( (dy <= max_dist_y * dt) & (dz <= max_dist_z * dt) )
+
+            # Normalized distance for assignment
+            distances = np.sqrt( (dy / max_dist_y)**2 + (dz / max_dist_z)**2 )
+            cost[j, valid] = distances[valid]
+
+
+        # Globally optimal one-to-one assignment
+        rows, cols = linear_sum_assignment(cost)
+
+        matched_detections = set()
+        matched_tracks = set()
+
+        for j, k in zip(rows, cols):
+            if cost[j, k] >= 1e9: continue
+
+            tr = active[j]
+            tr['frames'].append(t)
+            tr['positions'].append(detections[k].astype(float))
+            tr['last_frame'] = t
+
+            matched_tracks.add(j)
+            matched_detections.add(k)
+
+        # Unmatched detections start new tracks
+        for k, p in enumerate(detections):
+            if k not in matched_detections:
+                active.append({ 'frames': [t], 'positions': [p.astype(float)], 'last_frame': t })
+
+    # Finish remaining tracks
+    finished.extend(active)
+
+    # Filter tracks by minimum number of detections
+    tracks = []
+    for tr in finished:
+        if len(tr['frames']) >= min_length:
+            tracks.append({ 'frames': np.array(tr['frames']), 'positions': np.array(tr['positions']) })
+
+    return tracks
+
+def average_track_velocity(tracks, rec_y, rec_z, dt):
+    for tr in tracks:
+        pp = tr['positions'].astype(int)
+        t = tr['frames'] * dt
+        z, y = rec_z[0, pp[:, 1]], rec_y[pp[:, 0], 0]
+        
+        fit_y, fit_z = linregress(t, y), linregress(t, z)
+
+        tr['vy_avg'], tr['vz_avg'] = fit_y.slope, fit_z.slope
+        
+        tr['vy_err'], tr['vz_err'] = fit_y.stderr, fit_z.stderr
+    return tracks
+
+def average_track_gt(gt, tracks, radius_y=2, radius_z=2):
+    for tr in tracks:
+        values = []
+
+        for t, pos in zip(tr['frames'], tr['positions']):
+            iy, iz = pos.astype(int)
+
+            # Extract neighbourhood, handling boundaries
+            y0 = max(0, iy - radius_y)
+            y1 = min(gt.shape[1], iy + radius_y + 1)
+            z0 = max(0, iz - radius_z)
+            z1 = min(gt.shape[2], iz + radius_z + 1)
+            neighbourhood = gt[t, y0:y1, z0:z1]
+
+            # Mean ignoring NaNs
+            if np.any(np.isfinite(neighbourhood)):
+                values.append(np.nanmean(neighbourhood))
+
+        tr['gt_avg'] = np.mean(values) if values else np.nan
+        tr['gt_std'] = np.std(values) if values else np.nan
+        tr['gt_n'] = len(values)
+
+    return tracks
+
+
+def plot_colored_line(ax, y_line, x_line, gt_line, norm,  cmap='coolwarm', linewidth=2, mmm=0):
+    x, y = x_line - mmm, y_line
+    c = gt_line - np.nanmean(gt_line)
+
+    # Remove invalid points
+    valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(c)
+    x, y, c = x[valid], y[valid], c[valid]
+
+    # Build line segments
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+    # Create colored line
+    # outline = LineCollection( segments, colors='black', linewidth=linewidth + 1.5, zorder=1 )
+    # ax.add_collection(outline)
+    
+    # lc = LineCollection(segments, cmap=cmap, norm=norm, linewidth=linewidth, alpha=1.0, antialiased=True)
+    
+    lc = LineCollection( segments, cmap=cmap, norm=norm, linewidth=linewidth, alpha=1, zorder=2 )
+    lc.set_array((c[:-1] + c[1:]) / 2)
+    lc.set_path_effects([ pe.Stroke(linewidth=linewidth + 1.5, foreground='black'), pe.Normal() ])
+
+    ax.add_collection(lc)
+    
+    # lc.set_array((c[:-1] + c[1:]) / 2)
+    # lc.set_linewidth(linewidth)
+    # ax.add_collection(lc)
+    return lc
+
+
 
 def density_millero(t, s):
     """
@@ -727,7 +1037,7 @@ area_Q = 0.3 * 0.08
 
 t1 = time()
 
-f = 1
+f = 4
 
 path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
 surface = True
@@ -759,7 +1069,7 @@ print(rec_x.shape)
 
 #%%
 
-i = 80
+i = 50
 ysig = 15
 zsig = 3
 
@@ -796,7 +1106,7 @@ rec_xf[fil] = np.nan
 
 fig, ax = plt.subplots(1,3, figsize=(9,5))
 
-s1 = ax[0].imshow( rec_x[i], extent=lims, origin='lower'  )
+s1 = ax[0].imshow( rec_x[i], extent=lims, origin='lower' )
 s2 = ax[1].imshow( rec_sf[i], extent=lims, origin='lower' )
 s3 = ax[2].imshow( rec_xf[i], extent=lims, origin='lower' )
 
@@ -948,6 +1258,208 @@ plt.show()
 
 #%%
 
+
+#%%
+from scipy.ndimage import binary_erosion as bin_erosion
+
+
+from scipy.ndimage import maximum_filter
+
+i = 52
+lims = [np.nanmin(rec_z), np.nanmax(rec_z),np.nanmin(rec_y),np.nanmax(rec_y)]
+
+# diy, dix = 25, 5
+
+# t1 = time()
+# y, x = np.ogrid[-diy:diy+1, -dix:dix+1]
+# footprint = (y/diy)**2 + (x/dix)**2 <= 1
+# img = np.nan_to_num(rec_f[i], nan=-np.inf)
+# valid = np.isfinite(img)
+# interior = bin_erosion(valid, iterations=5)
+
+# filtered = maximum_filter(img, footprint=footprint)
+# peaks = (img == filtered) & np.isfinite(img)
+# ab = np.argwhere(peaks)
+# ab = ab[interior[ab[:, 0], ab[:, 1]]]
+
+# t2 = time()
+# img = np.nan_to_num(rec_f[i], nan=-np.inf)
+# aa = peak_local_max( img, min_distance=10, exclude_border=True, labels=~np.isnan(rec_f[i]), num_peaks=15 )
+# t3 = time()
+
+# print(t3-t2, t2-t1)
+
+
+
+
+plt.figure()
+plt.imshow( rec_f[i], extent=lims, origin='lower', cmap='Spectral' )
+# plt.imshow( img, extent=lims, origin='lower', cmap='Spectral' )
+# plt.imshow( ~np.isnan(rec_f[i]), extent=lims, origin='lower' )
+
+if len(aa)>0: my, mx = aa.T
+plt.plot(rec_z[0,mx], rec_y[my,0], 'ks')
+if len(ab)>0: my, mx = ab.T
+plt.plot(rec_z[0,mx], rec_y[my,0], 'b.')
+
+
+plt.colorbar()
+plt.show()
+
+#%%
+
+sigmas = [1,20,4]
+slope_v='all'
+low_y = -80
+
+filt_y = np.argmin(np.all(rec_y <= low_y, axis=1)) 
+rec_nx = np.copy(rec_x)
+rec_nx[:,:filt_y,:] = np.nan
+
+
+
+dt = 30
+t1 = time()
+gt, melt_rate, _ = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True, smooth=True, slope_v='all' )
+minima, maxima = get_minmax(rec_z, rec_y, rec_nx, rec_back, sigmas, slope_v='all', tol = 1e-8 )
+#get tracks
+min_tracks = track_extrema( minima, min_length=10, max_gap=2, max_dist_y=15.0, max_dist_z=3. )
+max_tracks = track_extrema( maxima, min_length=10, max_gap=2, max_dist_y=15.0, max_dist_z=3. )
+#add vels
+min_tracks = average_track_velocity(min_tracks, rec_y, rec_z, dt)
+max_tracks = average_track_velocity(max_tracks, rec_y, rec_z, dt)
+#add melt rates
+min_tracks = average_track_gt(gt, min_tracks, radius_y=5, radius_z=1)
+max_tracks = average_track_gt(gt, max_tracks, radius_y=5, radius_z=1)
+
+min_mvy = np.array([tr['vy_avg'] for tr in min_tracks])
+min_svy = np.array([tr['vy_err'] for tr in min_tracks])
+min_mvz = np.array([tr['vz_avg'] for tr in min_tracks])
+min_svz = np.array([tr['vz_err'] for tr in min_tracks])
+min_mmr = np.array([tr['gt_avg'] for tr in min_tracks])
+min_smr = np.array([tr['gt_std'] for tr in min_tracks])
+
+max_mvy = np.array([tr['vy_avg'] for tr in max_tracks])
+max_svy = np.array([tr['vy_err'] for tr in max_tracks])
+max_mvz = np.array([tr['vz_avg'] for tr in max_tracks])
+max_svz = np.array([tr['vz_err'] for tr in max_tracks])
+max_mmr = np.array([tr['gt_avg'] for tr in max_tracks])
+max_smr = np.array([tr['gt_std'] for tr in max_tracks])
+
+t2 = time()
+print(t2-t1)
+
+
+print('         \t   Vy     \t    Vz     \t    Melt rate ' )
+
+mean_vy = np.mean(min_mvy)
+std_vy_total = np.sqrt( np.var(min_mvy, ddof=1) + np.mean(min_svy**2) )
+
+mean_vz = np.mean(min_mvz)
+std_vz_total = np.sqrt( np.var(min_mvz, ddof=1) + np.mean(min_svz**2) )
+
+mean_mr = np.mean(min_mmr)
+std_mr_total = np.sqrt( np.var(min_mmr, ddof=1) + np.mean(min_smr**2) )
+
+print(f'Mean Min : \t {mean_vy:.3f} mm/s \t {mean_vz:.3f} mm/s \t {mean_mr:.3f} mm/s ' )
+print(f'Error Min: \t {std_vy_total:.3f} mm/s \t {std_vz_total:.3f} mm/s \t {std_mr_total:.3f} mm/s ' )
+
+mean_vy = np.mean(max_mvy)
+std_vy_total = np.sqrt( np.var(max_mvy, ddof=1) + np.mean(max_svy**2) )
+
+mean_vz = np.mean(max_mvz)
+std_vz_total = np.sqrt( np.var(max_mvz, ddof=1) + np.mean(max_svz**2) )
+
+mean_mr = np.mean(max_mmr)
+std_mr_total = np.sqrt( np.var(max_mmr, ddof=1) + np.mean(max_smr**2) )
+
+print(f'Mean Max : \t {mean_vy:.3f} mm/s \t {mean_vz:.3f} mm/s \t {mean_mr:.3f} mm/s ' )
+print(f'Error Max: \t {std_vy_total:.3f} mm/s \t {std_vz_total:.3f} mm/s \t {std_mr_total:.3f} mm/s ' )
+
+
+i = 20
+# plt.figure()
+
+# plt.imshow( rec_x[i], extent=lims, origin='lower', cmap='Spectral' )
+# # plt.imshow( thing[i], extent=lims, origin='lower' )
+# # plt.imshow( grad_norm[i], extent=lims, origin='lower' )
+
+
+# # plt.imshow(gyy[-1], extent=lims, origin='lower', cmap='Spectral' )
+# # plt.imshow(gzz[-1], extent=lims, origin='lower', cmap='Spectral' )
+# # plt.imshow( np.abs(gz[-1]), extent=lims, origin='lower', cmap='Spectral' )
+# # plt.imshow( (np.abs(gy[-1]) + np.abs(gz[-1])) < 0.01, extent=lims, origin='lower' )
+
+# pp = minima[i].T
+# plt.plot( rec_z[0,pp[1]], rec_y[pp[0],0], 'k.' )
+# pp = maxima[i].T
+# plt.plot( rec_z[0,pp[1]], rec_y[pp[0],0], 'b.' )
+
+# plt.colorbar()
+# plt.show()
+
+
+plt.figure()
+plt.imshow( rec_x[i], extent=lims, origin='lower', cmap='Spectral' )
+nt = len(rec_x)
+for j in range(nt):
+    pp = minima[j].T
+    plt.plot( rec_z[0,pp[1]], rec_y[pp[0],0], '.', color=(i/nt,0.2,1-i/nt) )
+    # pp = maxima[i].T
+    # plt.plot( rec_z[0,pp[1]], rec_y[pp[0],0], '.', color=(i/nt,0.2,1-i/nt) )
+# plt.axis('equal')
+
+plt.colorbar()
+plt.show()
+
+
+plt.figure()
+plt.imshow(rec_x[i], extent=lims, origin='lower', cmap='Spectral')
+# for tr in max_tracks:
+for tr in min_tracks:
+    pp = tr['positions'].astype(int)
+    plt.plot(rec_z[0, pp[:, 1]], rec_y[pp[:, 0], 0], '-o', markersize=3)
+plt.colorbar()
+plt.show()
+
+
+# plt.figure()
+# plt.errorbar(min_mvz, min_mvy, xerr=min_svz, yerr=min_svy, fmt='s', label='Min')
+# plt.errorbar(max_mvz, max_mvy, xerr=max_svz, yerr=max_svy, fmt='o', label='Max')
+# plt.legend()
+# plt.show()
+
+
+
+#%%
+
+
+# i = 0
+# fig, ax = plt.subplots(1,2, figsize=(6,5))
+
+# vmax = np.nanmax(np.abs( rec_x[i] - np.nanmean(rec_x[i]) ))
+# norm = Normalize(vmin=-vmax, vmax=vmax)
+
+# s1 = ax[0].imshow( rec_x[i], extent=lims, origin='lower', cmap='Spectral' )
+# s2 = ax[1].imshow( rec_p[i], extent=lims, origin='lower', cmap='Spectral' )
+
+# plt.colorbar(s1, ax=ax[0])
+# plt.colorbar(s2, ax=ax[1])
+# plt.show()
+
+
+# C = spatiotemporal_correlation(rec_x, max_lag=5)
+
+# plt.imshow(C[4], origin='lower', aspect='auto')
+# plt.colorbar(label='Correlation')
+# plt.xlabel('Displacement x')
+# plt.ylabel('Displacement y')
+# plt.show()
+#%%
+
+
+
+#%%
 
 # plt.figure()
 # plt.imshow( rec_xf[i] , extent=lims, origin='lower', cmap='Spectral' )
@@ -2137,535 +2649,6 @@ plt.show()
 
 
 #%%
-# Test of single one
-f = 3
-
-t1 = time()
-path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
-surface = True
-channel = True
-
-rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, starts[f], ends[f] )
-
-if f==0: rec_x[16] = np.nan
-elif f==3: rec_x[68:71] = np.nan
-elif f==2: back_t, back_x = back_t[:-1], back_x[:-1]
-
-print( f'{f},\tvel: {np.median(Q_tunnel)/area_Q/3600:.2f} m/s,\t T:{np.median(T_top):.1f} °C,\t GSF: {grid_vels[f]}'  )
-print(rec_x.shape)
-
-t_med = time()    
-
-rec_f = fill_reconstruction(rec_x, sigma=1)
-rec_back = np.interp(rec_t, back_t, back_x )
-    
-lims = [np.nanmin(rec_z), np.nanmax(rec_z),np.nanmin(rec_y),np.nanmax(rec_y)]
-dz, dy = 2.5, 0.5
-
-t2 = time()
-print(t2-t1)
-
-
-tempt = temp_t(T_top, T_bot, rec_t, tiempo)
-mean_x = np.nanmedian(rec_x, axis=(1,2))
-ushearT = np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
-Ret = ushearT * mean_x/1000 / nu_visco(tempt)
-Re = ushearT * mean_x/1000 / nu_visco(18.8)
-
-# Nu = melt_rate/1000 * rho_ice * latent * length0 / (thermal_cond(tempt) * tempt )
-
-# print(Ret)
-
-#%%
-
-t1 = time()
-
-epsilon = np.random.normal(0,0.5, (100,len(rec_back)))
-
-mrs = []
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message="All-NaN slice encountered")
-    warnings.filterwarnings("ignore", message="Mean of empty slice")
-    warnings.filterwarnings("ignore", message="invalid value encountered in divide")
-
-    for eps in tqdm(epsilon):
-    
-        mascara = ~np.isnan(rec_f)
-        sup_ar = area_superficial_multi_2d(rec_f, rec_z, rec_y, mascara)
-        flat_a = area_superficial_multi_2d( np.ones_like(rec_f), rec_z, rec_y, mascara)
-        
-        tempt = temp_t(T_top, T_bot, rec_t, tiempo)
-        mean_x = np.nanmedian(rec_x, axis=(1,2))
-        ushearT = np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
-        
-        Ret = ushearT * mean_x/1000 / nu_visco(tempt)
-        
-        # gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True, smooth=True )
-        gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back + eps, sigmas=[2,10,2], time_val=True, integral=False, smooth=True )
-        
-        NuTk = melt_rate/1000 * rho_ice * latent * length0 / (thermal_cond(tempt) * tempt )
-        NuT_ar = melt_rate/1000 * rho_ice * latent * length0 / (thermal_cond(tempt) * tempt ) * flat_a/sup_ar
-        ReT = ushearT * mean_x/1000 / nu_visco(tempt)
-        PrT = nu_visco(tempt) / heat_diff(tempt)
-        
-        mrs.append(melt_rate)
-
-    mrs = np.array(mrs)
-    gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=False, smooth=True )
-
-t2 = time()
-print(t2-t1)
-#%%
-
-
-
-#%%
-
-
-
-
-n = 30
-
-plt.figure()
-plt.plot( mrs[n] )
-plt.plot( mrs[n+1] )
-plt.plot( mrs[n+2] )
-
-m_mr, s_mr = np.nanmean( mrs, axis=0), np.nanstd( mrs, axis=0)
-plt.plot( m_mr, 'k--' )
-plt.plot( melt_rate, '.-' )
-
-plt.fill_between( np.arange(len(rec_back)), melt_rate-s_mr, melt_rate+s_mr, color='gray', alpha=0.5  )
-
-plt.show()
-
-
-print('Rel err: ', np.nanmean(s_mr)/ np.nanmean(m_mr), np.nanmean(s_mr/m_mr) )
-np.nanmean(s_mr), np.nanmedian(s_mr), np.nanstd(s_mr)
-
-#%%
-
-fig, ax = plt.subplots(1,2, layout='constrained', figsize=(8,4), sharey=True)
-
-ax[0].plot(ReT, NuTk, label=r'$\alpha = 0$')
-ax[0].plot(ReT, NuTk / PrT**(1/3), label=r'$\alpha = 1/3$' )
-ax[0].plot(ReT, NuTk / PrT**(3/4), label=r'$\alpha = 3/4$' )
-ax[0].plot(ReT, NuTk / PrT**(1), label=r'$\alpha = 1$' )
-
-ax[1].plot(ReT, NuT_ar, label=r'$\alpha = 0$')
-ax[1].plot(ReT, NuT_ar / PrT**(1/3), label=r'$\alpha = 1/3$' )
-ax[1].plot(ReT, NuT_ar / PrT**(3/4), label=r'$\alpha = 3/4$' )
-ax[1].plot(ReT, NuT_ar / PrT**(1), label=r'$\alpha = 1$' )
-
-ax[0].legend()
-ax[0].set_ylabel(r'Nu/Pr$^\alpha$')
-ax[1].legend()
-ax[1].set_ylabel(r'Nu$_A$/Pr$^\alpha$')
-
-plt.show()
-
-
-#%%
-mascara = ~np.isnan(rec_f)
-sup_ar = area_superficial_multi_2d(rec_f, rec_z, rec_y, mascara)
-flat_a = area_superficial_multi_2d( np.ones_like(rec_f), rec_z, rec_y, mascara)
-
-# times to get temperatre
-dt_ct = tiempo[-1] - rec_t[-1] 
-t0 = tiempo[0]
-
-# standard deviation all surface
-diff = np.sqrt( ( rec_x - np.nanmean(rec_x, axis=(1,2) )[:,None,None] )**2 )
-hhr = np.nanmean( diff, axis=(1,2) ) 
-
-# standard deviation top part surface
-fil = (rec_y>0)
-diff = np.sqrt( ( rec_x[:,fil] - np.nanmean(rec_x[:,fil], axis=(1) )[:,None] )**2 )
-hrr = np.nanmean( diff, axis=(1) ) 
-    
-# standard deviation top part surface (minus very top)
-fil = (rec_y>0) * (rec_y< 200)
-diff = np.sqrt( ( rec_x[:,fil] - np.nanmean(rec_x[:,fil], axis=(1) )[:,None] )**2 )
-hrh = np.nanmean( diff, axis=(1) ) 
-
-
-fig, ax = plt.subplots(1,3, layout='constrained', figsize=(12,4))
-
-ax[0].plot( hhr, '.-', label='all')
-ax[0].plot( hrr, '.-', label=r'$0<y$')
-ax[0].plot( hrh, '.-', label=r'$0<y<200$')
-ax[0].legend()
-ax[0].grid()
-ax[0].set_ylabel(r'$\sigma$')
-
-
-ax[1].plot( sup_ar / flat_a )
-ax[1].grid()
-ax[1].set_ylabel( 'Surface area / Flat area' )
-
-
-ax[2].plot( tiempo - t0 , T_top , '-' )
-ax[2].vlines(rec_t + dt_ct - t0, 6, 13, colors='red' )
-ax[2].grid()
-ax[2].set_ylabel('Temperature')
-ax[2].set_xlabel('Time')
-
-plt.show()
-
-#%%
-
-
-temp =  (T_top[0] + T_bot[0])/2 
-tempt = temp_t(T_top, T_bot, rec_t, tiempo)
-
-gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True )
-u_shear = np.array([np.median(Q_tunnel) / area_Q / 3600] * len(rec_t))
-
-mean_x = np.nanmedian(rec_x, axis=(1,2))
-ushearT = np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
-
-Nu = melt_rate/1000 * rho_ice * latent * length0 / (thcon * temp )
-# Nu = melt_rate/1000 * rho_ice * latent * mean_x/1000 / (thcon * temp )
-Re = u_shear * 0.08 / nu_visco(temp)
-Pr = np.ones_like(Re) * nu_visco(temp) / heat_diff(temp)
-
-
-# NuT = melt_rate/1000 * rho_ice * latent * length0 / (thcon * tempt )
-NuTk = melt_rate/1000 * rho_ice * latent * length0 / (thermal_cond(tempt) * tempt )
-# NuTk = melt_rate/1000 * rho_ice * latent * mean_x/1000 / (thermal_cond(tempt) * tempt )
-
-ReT = ushearT * mean_x/1000 / nu_visco(tempt)
-PrT = nu_visco(tempt) / heat_diff(tempt)
-
-fig, ax = plt.subplots(1,3, layout='constrained', figsize=(12,4))
-
-expo = 0
-# ax[0].plot( rec_t, Nu / Pr**(expo), '.-' )
-# ax[0].plot( rec_t, NuTk / PrT**(expo), '.-' )
-# # ax[0].plot( rec_t, melt_rate, '.-' )
-
-# ax[0].plot( rec_t, mean_x*15, '.-' )
-
-ax[0].plot( Re, Nu / Pr**(expo), '.-' )
-ax[0].plot( ReT, NuTk / PrT**(expo), '.-' )
-# ax[1].set_xscale('log')
-# ax[1].set_yscale('log')
-
-ax[1].plot( rec_t, Pr, '.-' )
-ax[1].plot( rec_t, PrT, '.-' )
-ax[2].plot( rec_t, Re, '.-' )
-ax[2].plot( rec_t, ReT, '.-' )
-
-# ax[1].plot( rec_t, u_shear, '.-' )
-# ax[1].plot( rec_t, ushearT, '.-' )
-
-
-plt.show()
-
-#%%
-
-from scipy.ndimage import generic_filter
-
-i = 50
-
-t1 = time()
-ry = 20  # vertical radius
-rx = ry/5  # horizontal radius
-
-print( f"Radius in mm: ry={ry*dy}, rz={rx*dz}" )
-
-ygg, xgg = np.ogrid[-ry:ry+1, -rx:rx+1]
-footprint = (ygg/ry)**2 + (xgg/rx)**2 <= 1
-
-rec_sig = generic_filter(rec_x[i], np.nanstd, footprint=footprint )
-masca = np.isnan(rec_x[i])
-rec_sig[masca] = np.nan
-
-gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True )
-
-t2 = time()
-print(t2-t1)
-
-#%%
-
-fig, ax = plt.subplots(1,3, figsize=(10,5))
-
-s1 = ax[0].imshow( rec_x[i], extent=lims, origin='lower' )
-s2 = ax[1].imshow( rec_sig, extent=lims, origin='lower' )
-# ax[2].imshow( footprint )
-s3 = ax[2].imshow( gt[i], extent=lims, origin='lower' )
-
-plt.colorbar(s1, ax=ax[0])
-plt.colorbar(s2, ax=ax[1])
-plt.show()
-
-
-plt.figure()
-plt.scatter( rec_sig.flatten(), gt[i].flatten()  )
-plt.show()
-
-maskrec = np.isnan( rec_sig.flatten() )
-maskgt = np.isnan( gt[i].flatten()  )
-mm = maskgt + maskrec
-
-np.corrcoef( (rec_sig.flatten())[~mm], (gt[i].flatten())[~mm] )
-
-#%%
-
-
-#%%
-# =============================================================================
-# Nu vs Re
-# =============================================================================
-#approx Re (with spped from set ) and Nu
-
-surface = True
-channel = True
-
-
-Nus, Res, Prs = [],[], []
-Nus_sd, Res_sd = [],[]
-
-Nus_t = []
-
-vels, times = [],[]
-velsm, velss = [],[]
-
-hrms, area_diff = [],[]
-
-# for f in tqdm(range(len(all_folders))):
-# for f in tqdm([8]):
-for f in tqdm(range(len(all_folders)-1)):
-
-    path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'    
-    rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, starts[f], ends[f] )
-    
-    if f==0: rec_x[16] = np.nan
-    elif f==3: rec_x[68:71] = np.nan
-    elif f==2: back_t, back_x = back_t[:-1], back_x[:-1]
-        
-    
-    rec_f = fill_reconstruction(rec_x, sigma=1)
-    rec_back = np.interp(rec_t, back_t, back_x )
-        
-    lims = [np.nanmin(rec_z), np.nanmax(rec_z),np.nanmin(rec_y),np.nanmax(rec_y)]
-    dz, dy = 2.5, 0.5
-    
-    filt_y = np.argmin(np.all(rec_y <= 0, axis=1)) 
-    rec_x[:,:filt_y,:] = np.nan
-    rec_f[:,:filt_y,:] = np.nan
-    
-    # temp = 12.3 #°C
-    temp =  (T_top[0] + T_bot[0])/2 
-
-    
-    gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True )
-
-    Nu = melt_rate/1000 * rho_ice * latent * length0 / (thcon * temp )
-    Nus_t.append(Nu)
-    
-    # gt, melt_rate, std_melt = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=False, integral=True )
-    # Nu = melt_rate/1000 * rho_ice * latent * length0 / (thcon * temp )
-    # nusd = std_melt/1000 * rho_ice * latent * length0 / (thcon * temp )
-    
-    tempt = temp_t(T_top, T_bot, rec_t, tiempo)
-    mean_x = np.nanmedian(rec_x, axis=(1,2))
-    ushearT = np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
-
-    Nu = melt_rate/1000 * rho_ice * latent * length0 / (thermal_cond(tempt) * tempt )
-    Re = ushearT * mean_x/1000 / nu_visco(tempt)
-    Pr = nu_visco(tempt) / heat_diff(tempt)
-    
-    # area_Q = 0.3 * 0.08
-    
-    # u_shear, std_shear = np.median(Q_tunnel) / area_Q / 3600, np.std(Q_tunnel) / area_Q / 3600
-    # # Re = u_shear * length0 / nu
-    # # resd = std_shear * length0 / nu
-    # Re = u_shear * 0.08 / nu   #use width instead of height 
-    # resd = std_shear * 0.08 / nu
-    
-    Nus.append(Nu); Res.append(Re), Prs.append(Pr)
-    # Nus_sd.append(nusd); Res_sd.append(resd)
-    
-    diff_vels = np.median(Q_tunnel) / (np.nanmedian( rec_x, axis=(1,2)) /1000 * 0.3) / 3600
-    velsm.append( np.nanmean(diff_vels) )
-    velss.append( np.nanstd(diff_vels) )
-    
-    vels.append( np.median( Q_tunnel / area_Q / 3600 ) )
-    times.append( rec_t )
-    
-    # diff = np.sqrt( ( rec_x - np.nanmean(rec_x, axis=(1,2) )[:,None,None] )**2 )`
-    # hrms.append( np.nanmean( diff, axis=(1,2) ) )
-
-    # fil = (rec_y>=0)
-    # diff = np.sqrt( ( rec_x[:,fil] - np.nanmean(rec_x[:,fil], axis=(1) )[:,None] )**2 )
-    # hrr = np.nanmean( diff, axis=(1) ) 
-
-    diff = np.sqrt( ( rec_x - np.nanmean(rec_x, axis=(1,2) )[:,None,None] )**2 )
-    hrr = np.nanmean( diff, axis=(1,2) ) 
-    if f == 2:
-        hrr[-12] = np.nan
-    hrms.append( hrr )
-    
-    mascara = ~np.isnan(rec_f)
-    sup_ar = area_superficial_multi_2d(rec_f, rec_z, rec_y, mascara)
-    flat_a = area_superficial_multi_2d( np.ones_like(rec_f), rec_z, rec_y, mascara)
-    ard = sup_ar / flat_a
-    if f == 2:
-        ard[-12] = np.nan
-    area_diff.append( ard )
-    
-    
-# Nus,Res = np.array(Nus), np.array(Res)
-# Nus_sd,Res_sd = np.array(Nus_sd), np.array(Res_sd)
-
-#%%
-
-
-plt.figure()
-
-cmap = plt.get_cmap('viridis',9)
-
-# for i in range(len(Nus)):
-
-# mNus = np.nanmean(Nus)    
-
-# plt.errorbar(Res, Nus, yerr=Nus_sd, markersize=0, fmt='.', capsize=5 , alpha=0.5)
-for i in range(9):
-    plt.plot(Res[i][3:-3], Nus[i][3:-3], '.-', alpha=0.5)
-# gr = plt.scatter(Res, Nus,  c=grid_vels[:-1], cmap=cmap )
-
-
-# res = np.linspace(7e4,4.5e5, 100) 
-# # plt.plot( Res, Res**(3/4) * .1 )
-# plt.plot( res, res**(2/3) * .3, 'k--', label=r'Nu $\propto$ Re$^{2/3}$')
-
-res = np.linspace(6e3,5e4, 100) 
-# plt.plot( Res, Res**(3/4) * .1 )
-plt.plot( res, res**(2/3) * 2., 'k--', label=r'Nu $\propto$ Re$^{2/3}$')
-
-plt.xscale('log')
-plt.yscale('log')
-
-plt.xlabel('Re')
-plt.ylabel('Nu')
-
-plt.legend(loc='upper left' )
-
-# plt.colorbar(gr)
-
-# plt.savefig('./Documents/Nu_Re.pdf',dpi=400, bbox_inches='tight')
-plt.show()
-
-# print(u_shear, temp)
-# print(Nu, Re)
-
-
-fig,ax = plt.subplots(1,2, layout='constrained', figsize=(8,4))
-
-color = {'0.10':'r', '0.30':'g', '0.50':'m', '0.65':'b' }
-
-expo = 1/3
-for i in range(9):
-    ax[0].plot(hrms[i][3:-3], Nus[i][3:-3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
-    # ax[0].plot(hrms[i][3:-3], Nus[i][3:-3] / hrms[i][3:-3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
-
-    # ax[1].plot(area_diff[i][3:-3], Nus[i][3:-3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
-    ax[1].plot(area_diff[i][3:-3], Nus[i][3:-3] / Nus[i][3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
-    # ax[1].plot(area_diff[i][3:-3], Nus[i][3:-3] / area_diff[i][3:-3] / Prs[i][3:-3]**(expo), '.-', color=color[f'{vels[i]:.2f}'] , label=f'{velsm[i]:.2f} m/s')
-
-    # js = np.arange(len(Nus[n]))
-    # plt.plot( times[n][4:-3]/60, hrms[n][4:-3], '.-', color=color[f'{vels[n]:.2f}'] , label=f'{velsm[n]:.2f} m/s' )
-    
-# gr = plt.scatter(Res, Nus,  c=grid_vels[:-1], cmap=cmap )
-
-ax[0].set_xlabel(r'$\sigma_h$')
-ax[0].set_ylabel('Nu')
-ax[0].legend(loc='upper right' )
-
-ax[1].set_xlabel(r'$A_s / A_0$')
-ax[1].set_ylabel('Nu')
-ax[1].legend(loc='upper right' )
-
-# plt.colorbar(gr)
-
-# plt.savefig('./Documents/Nu_Re.pdf',dpi=400, bbox_inches='tight')
-plt.show()
-
-
-#%%
-
-avh = np.nanmean( rec_x, axis=(1,2) )
-
-plt.figure()
-plt.plot( back_t/60, back_x, '.-' )
-plt.plot( rec_t/60, rec_back, '.' )
-
-# plt.plot( rec_t/60, avh + rec_back, '.-'  )
-
-# plt.show()
-
-#%%
-
-plt.figure()
-
-color = {'0.10':'r', '0.30':'g', '0.50':'m', '0.65':'b' }
-
-# for n in [6,7,8]:
-for n in range(9):
-
-    js = np.arange(len(Nus_t[n]))
-    plt.plot( times[n][4:-3]/60, Nus_t[n][4:-3], '.-', color=color[f'{vels[n]:.2f}'] , label=f'{velsm[n]:.2f} m/s' )
-
-plt.xlabel('t (min)')
-plt.ylabel('Nu(t)')
-
-# plt.yscale('log')
-
-plt.legend()
-plt.grid()
-plt.show()
-
-#%%
-plt.figure()
-
-color = {'0.10':'r', '0.30':'g', '0.50':'m', '0.65':'b' }
-
-# for n in [4]:
-for n in range(9):
-# for n in range(6,8):
-
-    js = np.arange(len(Nus[n]))
-    # plt.plot( times[n][4:-3]/60, hrms[n][4:-3], '.-', color=color[f'{vels[n]:.2f}'] , label=f'{velsm[n]:.2f} m/s' )
-    plt.plot( times[n][4:-3]/60, area_diff[n][4:-3] , 's-', color=color[f'{vels[n]:.2f}'] , label=f'{velsm[n]:.2f} m/s' )
-
-plt.xlabel('t (min)')
-plt.ylabel(r'$\sigma_{h}$')
-
-# plt.yscale('log')
-
-plt.legend()
-plt.grid()
-plt.show()
-
-#%%
-
-diff = np.sqrt( ( rec_x - np.nanmean(rec_x, axis=(1,2) )[:,None,None] )**2 )
-
-fil = (rec_y>0)
-
-plt.figure()
-# plt.gca().invert_yaxis()
-# plt.imshow( rec_x[20], extent=( np.min(rec_z),np.max(rec_z), np.max(rec_y),np.min(rec_y) )  )
-plt.imshow( diff[20], extent=( np.min(rec_z),np.max(rec_z), np.max(rec_y),np.min(rec_y) )  )
-# plt.axis('equal')
-
-# plt.plot(rec_t,  np.nanmean( diff, axis=(1,2) ), '.-' )
-
-plt.colorbar()
-plt.show()
-
-
 
 
 
@@ -2674,48 +2657,70 @@ plt.show()
 # Watershed
 # =============================================================================
 
+lwidth = 1/2 # 1 or 1/2
+
 all_lx, all_ly, all_ssca, all_sme = [],[],[],[] 
+m_res, rec_ts = [], []
 
-rec_ts = []
+for f in range(len(all_folders) - 1):
+# for f in [7]:
 
-# for f in range(len(all_folders)):
-for f in [7]:
-
+    print(f)
     path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
     surface = True
     channel = True
     
     rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, starts[f], ends[f] )
     
+    # if f==0: rec_x[16] = np.nan
+    # elif f==3: rec_x[68:71] = np.nan
+    # elif f==2: back_t, back_x = back_t[:-1], back_x[:-1]
+
     if f==0: rec_x[16] = np.nan
     elif f==3: rec_x[68:71] = np.nan
-    elif f==2: back_t, back_x = back_t[:-1], back_x[:-1]
+    elif f==4: rec_x, rec_t = rec_x[:-2], rec_t[:-2] # removed mostly for melt rates
+    elif f==2: 
+        back_t, back_x = back_t[:-1], back_x[:-1]
+        rec_x[:,618:1130,50:] = np.nan
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+        warnings.filterwarnings("ignore", message="Mean of empty slice")
+        warnings.filterwarnings("ignore", message="invalid value encountered in divide")
+
+        tempt = temp_t(T_top, T_bot, rec_t, tiempo)
+        mean_x, std_x = np.nanmedian(rec_x, axis=(1,2)), np.nanstd(rec_x, axis=(1,2))
+        med_Q, std_Q = np.median(Q_tunnel), np.std(Q_tunnel) 
         
-    
-    rec_f = fill_reconstruction(rec_x, sigma=1)
-    rec_back = np.interp(rec_t, back_t, back_x )
+        ushearT = med_Q / mean_x * 25/27 #np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
+        ushearT_s = 25/27 * np.sqrt( ( std_Q / mean_x )**2 + ( med_Q * std_x / mean_x**2 )**2 )
+        ReT = ushearT * mean_x/1000*lwidth / nu_visco(tempt)
+        m_res.append( np.nanmean(ReT) )
         
-    lims = [np.nanmin(rec_z), np.nanmax(rec_z),np.nanmin(rec_y),np.nanmax(rec_y)]
-    dz, dy = 2.5, 0.5
-    
-    s = 4
-    sig = 1.4
-    ysig, zsig  = 15, 3
-    sigmas = [ysig, zsig]
-    
-    std_thres = 0.013
-    if f == 7: std_thres = 0.015
-    
-    kurv, _,_,_,_,_,_ = kurvature(rec_f, rec_t, rec_y, rec_z, sigmas=[0, ysig, zsig ] )    
-    wats, scaprop, scapropk = watershed_segmentation(rec_f, rec_t, rec_y, rec_z, sigmas=sigmas, kernel_s=s, sig=sig, min_distance=5, fp1=disk(3), fp2=disk(2) )
-    lx,ly, ssca, cents, centws, nsca, nscaf, labe, ssd, smm, sme, ssi = scallop_props(rec_f, rec_y, scaprop, scapropk, \
-                                                                                      dz=dz, dy=dy, area_thres=100, std_thres=std_thres, dist_top=50, dist_bot=120)
-    
-    all_lx.append(lx); all_ly.append(ly) 
-    all_ssca.append(ssca); all_sme.append(sme)
-    rec_ts.append(rec_t)
-    
-    # lx,ly, ssca, cents, centws, nsca, nscaf, labe, ssd, smm, sme = scallop_props(rec_f, rec_y, scaprop, scapropk, dz=dz, dy=dy, area_thres=0, std_thres=0.0, dist_top=-50)
+        rec_f = fill_reconstruction(rec_x, sigma=1)
+        rec_back = np.interp(rec_t, back_t, back_x )
+            
+        lims = [np.nanmin(rec_z), np.nanmax(rec_z),np.nanmin(rec_y),np.nanmax(rec_y)]
+        dz, dy = 2.5, 0.5
+        
+        s = 4
+        sig = 1.4
+        ysig, zsig  = 15, 3
+        sigmas = [ysig, zsig]
+        
+        std_thres = 0.013
+        if f == 7: std_thres = 0.015
+        
+        kurv, _,_,_,_,_,_ = kurvature(rec_f, rec_t, rec_y, rec_z, sigmas=[0, ysig, zsig ] )    
+        wats, scaprop, scapropk = watershed_segmentation(rec_f, rec_t, rec_y, rec_z, sigmas=sigmas, kernel_s=s, sig=sig, min_distance=5, fp1=disk(3), fp2=disk(2) )
+        lx,ly, ssca, cents, centws, nsca, nscaf, labe, ssd, smm, sme, ssi = scallop_props(rec_f, rec_y, scaprop, scapropk, \
+                                                                                          dz=dz, dy=dy, area_thres=100, std_thres=std_thres, dist_top=50, dist_bot=120)
+        
+        all_lx.append(lx); all_ly.append(ly) 
+        all_ssca.append(ssca); all_sme.append(sme)
+        rec_ts.append(rec_t)
+        
+        # lx,ly, ssca, cents, centws, nsca, nscaf, labe, ssd, smm, sme = scallop_props(rec_f, rec_y, scaprop, scapropk, dz=dz, dy=dy, area_thres=0, std_thres=0.0, dist_top=-50)
 
         
 #%%
@@ -2803,165 +2808,357 @@ plt.show()
 
 #%%
 # =============================================================================
-# Wavelength
+# Wavelength, Area and amplitud
 # =============================================================================
 
+fig, ax = plt.subplots(1,3, layout='constrained', figsize=(11,4))
 
-fig, ax = plt.subplots()
+cmap = plt.cm.viridis
+cmap = mpl.colors.LinearSegmentedColormap.from_list( 'truncated_viridis', plt.cm.viridis(np.linspace(0, 0.8, 256)) )
+# norm = mpl.colors.Normalize(vmin=min(mres), vmax=max(mres))
+norm = mpl.colors.Normalize(vmin=14000, vmax=20000)
 
-# for f in [0,8]:
-#     lx,ly = all_lx[f], all_ly[f]
-#     rec_t = rec_ts[f]
-    
-#     mesx, sdsx = [],[]
-#     mesy, sdsy = [],[]
-    
-#     for i in range( len(lx) ):
-#         mesx.append( np.mean( lx[i] * dz ) )
-#         sdsx.append( np.std( lx[i] * dz ) )
-    
-#         mesy.append( np.mean( ly[i] * dy ) )
-#         sdsy.append( np.std( ly[i] * dy ) )
-    
-#     mesx, sdsx = np.array( mesx ), np.array( sdsx )
-#     mesy, sdsy = np.array( mesy ), np.array( sdsy )
-    
-    
-#     ax.plot( rec_t/60, mesx, '--', color='orange' ) #label=r'$\lambda_x$', 
-#     ax.fill_between(rec_t/60, mesx-sdsx, mesx+sdsx, alpha=0.5, color='orange' )
-    
-#     ax.plot( rec_t/60, mesy, '--', color='g' ) #label=r'$\lambda_y$'
-#     ax.fill_between(rec_t/60, mesy-sdsy, mesy+sdsy, alpha=0.5, color='g' )
+for j,f in enumerate([0, 8, 4, 5, 6, 7]):
 
-# leg1 = [ax.plot([], [], '--', color=c)[0] for c in ['orange', 'g']]
-# lgd = ax.legend(leg1, [r'$\lambda_x$', r'$\lambda_y$'])
-
-
-
-for f in [4,5,6,7]:
-
-    lx,ly = all_lx[f], all_ly[f]
+    lx, ly = all_lx[f], all_ly[f]
     rec_t = rec_ts[f]
-    
-    mesx, sdsx = [],[]
-    mesy, sdsy = [],[]
-    
-    for i in range( len(lx) ):
-        mesx.append( np.mean( lx[i] * dz ) )
-        sdsx.append( np.std( lx[i] * dz ) )
-    
-        mesy.append( np.mean( ly[i] * dy ) )
-        sdsy.append( np.std( ly[i] * dy ) )
-    
-    mesx, sdsx = np.array( mesx ), np.array( sdsx )
-    mesy, sdsy = np.array( mesy ), np.array( sdsy )
-
-    # color = None
-    # ax.plot( rec_t/60, mesx, '--', color=color ) #label=r'$\lambda_x$', 
-    # ax.fill_between(rec_t/60, mesx-sdsx, mesx+sdsx, alpha=0.5, color=color )
-
-    ax.plot( rec_t/60, mesy, '-'  ) #label=r'$\lambda_x$', 
-    ax.fill_between(rec_t/60, mesy-sdsy, mesy+sdsy, alpha=0.5)
-    
-    color = 'b'
-    # ax.plot( rec_t/60, mesy, '--', color=ç ) #label=r'$\lambda_y$'
-    # ax.fill_between(rec_t/60, mesy-sdsy, mesy+sdsy, alpha=0.5, color=color )
-
-# leg1 = [ax.plot([], [], '--', color=c)[0] for c in ['r', 'b']]
-# lgd = ax.legend(leg1, [r'$\lambda_x$', r'$\lambda_y$'])
-
-
-# plt.legend()
-ax.set_xlabel(r'$t$ (min)')
-ax.set_ylabel(r'$\lambda_y$ (mm)')
-
-# plt.savefig('./Documents/wavelengthy_65.pdf',dpi=400, bbox_inches='tight')
-
-plt.show()
-
-#%%
-# =============================================================================
-# Area
-# =============================================================================
-
-
-fig, ax = plt.subplots()
-
-# for f in [4,5,6,7]:
-for f in [0,8]:
-
     ssca = all_ssca[f] 
-    rec_t = rec_ts[f]
+    sme = all_sme[f]
+
+    mesy = np.array([np.mean(ly[i] * dy) for i in range(len(ly))])
+    sdsy = np.array([np.std(ly[i] * dy) for i in range(len(ly))])
+
+    mesa = np.array([np.mean( ssca[i] * dz*dy /100 ) for i in range(len(ly))])
+    sdsa = np.array([np.std( ssca[i] * dz*dy /100 ) for i in range(len(ly))])
     
-    mesa, sdsa = [],[]
+    mesh = np.array([np.mean( sme[i] ) for i in range(len(ly))])
+    sdsh = np.array([np.std( sme[i] ) for i in range(len(ly))])
     
-    for i in range( len(ssca) ):
-        mesa.append( np.mean( ssca[i] * dz*dy /100 ) )
-        sdsa.append( np.std( ssca[i] * dz*dy /100 ) )
-    
+    mesy, sdsy = np.array( mesy ), np.array( sdsy )
     mesa, sdsa = np.array( mesa ), np.array( sdsa )
+    mesh, sdsh = np.array( mesh ), np.array( sdsh )
 
-    # for i in range( len(ssca) ):
-    #     if ssca[i] is not np.nan:
-    #         for l in range( len(ssca[i]) ):
-    #             plt.plot( rec_t[i], ssca[i][l] * dz*dy /100 , '.' )
-    
-    
-    plt.plot( rec_t/60, mesa )
-    plt.fill_between(rec_t/60, mesa-sdsa, mesa+sdsa, alpha=0.5 )
 
-# plt.legend()
-plt.xlabel(r'$t$ (min)')
-plt.ylabel(r'$A$ (cm$^2$)')
+    color = cmap(norm(mres[f]))
 
-# plt.savefig('./Documents/area_65.pdf',dpi=400, bbox_inches='tight')
+    ax[0].plot(rec_t/60, mesy, '-', color=color, lw=1.8)
+    ax[0].errorbar( rec_t[2*j::10]/60, mesy[2*j::10], yerr=sdsy[2*j::10], fmt='none', ecolor=color,
+                elinewidth=1.5, capsize=2, alpha=0.7 )
+
+    ax[1].plot(rec_t/60, mesa, '-', color=color, lw=1.8)
+    ax[1].errorbar( rec_t[2*j::10]/60, mesa[2*j::10], yerr=sdsa[2*j::10], fmt='none', ecolor=color,
+                elinewidth=1.5, capsize=2, alpha=0.7 )
+
+    ax[2].plot(rec_t/60, mesh, '-', color=color, lw=1.8)
+    ax[2].errorbar( rec_t[2*j::10]/60, mesh[2*j::10], yerr=sdsh[2*j::10], fmt='none', ecolor=color,
+                elinewidth=1.5, capsize=2, alpha=0.7 )
+
+sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
+sm.set_array([])
+
+ax[0].set_xlabel(r'$t$ (min)')
+ax[1].set_xlabel(r'$t$ (min)')
+ax[2].set_xlabel(r'$t$ (min)')
+ax[0].set_ylabel(r'$\lambda_y$ (mm)')
+ax[1].set_ylabel(r'$A$ (cm$^2$)')
+ax[2].set_ylabel(r'$H$ (mm)')
+
+cbar = fig.colorbar(sm, ax=ax[2])
+cbar.set_label(r'Re')
+
+filename = '/Volumes/Ice blocks/Scan water channel/Figures/scallops.pdf'
+# plt.savefig(filename, dpi=200, bbox_inches='tight')
 
 plt.show()
 
 
 #%%
+
 # =============================================================================
-# Amplitude
+# Trying other things
 # =============================================================================
 
-fig, ax = plt.subplots()
+# Cross correlation
 
-# for f in [4,5,6,7]:
-for f in [0,8]:
+displacs = []
 
-    sme = all_sme[f] 
-    rec_t = rec_ts[f]
+for f in range(len(all_folders) - 1):
+# for f in [7]:
 
+    print(f)
+    path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
+    surface = True
+    channel = True
     
-    mesa, sdsa = [],[]
-    
-    for i in range( len(sme) ):
-        mesa.append( np.mean( sme[i] ) )
-        sdsa.append( np.std( sme[i] ) )
-    
-    mesa, sdsa = np.array( mesa ), np.array( sdsa )
+    rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, starts[f], ends[f] )
         
-    # for i in range( len(sme) ):
-    #     if sme[i] is not np.nan:
-    #         for l in range( len(sme[i]) ):
-    #             plt.plot( rec_t[i], sme[i][l] , '.' )
+    # if f==0: rec_x[16] = np.nan
+    # elif f==3: rec_x[68:71] = np.nan
+    # elif f==2: back_t, back_x = back_t[:-1], back_x[:-1]
+
+    if f==0: rec_x[16] = np.nan
+    elif f==3: rec_x[68:71] = np.nan
+    elif f==4: rec_x, rec_t = rec_x[:-2], rec_t[:-2] # removed mostly for melt rates
+    elif f==2: 
+        back_t, back_x = back_t[:-1], back_x[:-1]
+        rec_x[:,618:1130,50:] = np.nan
+
+
+    nt, ny, nz = rec_x.shape
+    valid_frames = ~np.all(np.isnan(rec_f), axis=(1, 2))
+    nan_f = np.isnan(rec_f[valid_frames])
+    valid = np.all(~nan_f, axis=0)
+    
+    y0, y1, x0, x1 = largest_valid_window(valid)
+    x1 = x1-2
+    
+    rec_p = preprocess(rec_f)
+    rec_p_clean = rec_p[:, y0:y1, x0:x1]
+    
+    Corr = spatiotemporal_correlation(rec_p_clean, max_lag=5, mode='same')
+    displacements = get_displacements(Corr, ny, nz, mode='same')
+    
+    dis_z = displacements[:, 0]
+    dis_y = displacements[:, 1]
+    
+    vz_dis, vy_dis = np.mean(dis_z*dz) / 30, np.mean(dis_y*dy) / 30
+    displacs.append( (vz_dis, vy_dis) )
+    # print()
+    # print(dis_z, dis_y)
+    # print(dis_z*dz, dis_y*dy)
+    
+    # print( np.mean(dis_z*dz) / 30, np.mean(dis_y*dy) / 30)
+    
+#%%
+# track max and mins
+sigmas = [1,20,4]
+slope_v='all'
+low_y = -80
+dt = 30
+
+vys_mi, vzs_mi, mrs_mi = [],[],[]
+vys_si, vzs_si, mrs_si = [],[],[]
+vys_ma, vzs_ma, mrs_ma = [],[],[]
+vys_sa, vzs_sa, mrs_sa = [],[],[]
+
+m_res = []
+
+for f in range(len(all_folders) - 1):
+
+    path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
+    surface = True
+    channel = True
+    
+    rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, starts[f], ends[f] )
+
+    if f==0: rec_x[16] = np.nan
+    elif f==3: rec_x[68:71] = np.nan
+    elif f==4: rec_x, rec_t = rec_x[:-2], rec_t[:-2] # removed mostly for melt rates
+    elif f==2: 
+        back_t, back_x = back_t[:-1], back_x[:-1]
+        rec_x[:,618:1130,50:] = np.nan
         
-    plt.plot( rec_t/60, mesa )
-    plt.fill_between(rec_t/60, mesa-sdsa, mesa+sdsa, alpha=0.5 )
+    rec_f = fill_reconstruction(rec_x, sigma=1)
+    rec_back = np.interp(rec_t, back_t, back_x )
+    
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+        warnings.filterwarnings("ignore", message="Mean of empty slice")
+        warnings.filterwarnings("ignore", message="invalid value encountered in divide")
+    
+        gt, melt_rate, _ = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True, smooth=True, slope_v='all' )
+        
+        tempt = temp_t(T_top, T_bot, rec_t, tiempo)
+        mean_x, std_x = np.nanmedian(rec_x, axis=(1,2)), np.nanstd(rec_x, axis=(1,2))
+        med_Q, std_Q = np.median(Q_tunnel), np.std(Q_tunnel) 
+        
+        ushearT = med_Q / mean_x * 25/27 #np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
+        ushearT_s = 25/27 * np.sqrt( ( std_Q / mean_x )**2 + ( med_Q * std_x / mean_x**2 )**2 )
+        ReT = ushearT * mean_x/1000*lwidth / nu_visco(tempt)
+        m_res.append( np.nanmean(ReT) )
 
-# plt.legend()
-plt.xlabel(r'$t$ (min)')
-plt.ylabel(r'$H$ (mm)')
+        
+    filt_y = np.argmin(np.all(rec_y <= low_y, axis=1)) 
+    rec_nx = np.copy(rec_x)
+    rec_nx[:,:filt_y,:] = np.nan
 
-# plt.savefig('./Documents/amplitud_65.pdf',dpi=400, bbox_inches='tight')
+    minima, maxima = get_minmax(rec_z, rec_y, rec_nx, rec_back, sigmas, slope_v='all', tol = 1e-8 )
+    #get tracks
+    min_tracks = track_extrema( minima, min_length=10, max_gap=2, max_dist_y=15.0, max_dist_z=3. )
+    max_tracks = track_extrema( maxima, min_length=10, max_gap=2, max_dist_y=15.0, max_dist_z=3. )
+    #add vels
+    min_tracks = average_track_velocity(min_tracks, rec_y, rec_z, dt)
+    max_tracks = average_track_velocity(max_tracks, rec_y, rec_z, dt)
+    #add melt rates
+    min_tracks = average_track_gt(gt, min_tracks, radius_y=5, radius_z=1)
+    max_tracks = average_track_gt(gt, max_tracks, radius_y=5, radius_z=1)
+    
+    min_mvy = np.array([tr['vy_avg'] for tr in min_tracks])
+    min_svy = np.array([tr['vy_err'] for tr in min_tracks])
+    min_mvz = np.array([tr['vz_avg'] for tr in min_tracks])
+    min_svz = np.array([tr['vz_err'] for tr in min_tracks])
+    min_mmr = np.array([tr['gt_avg'] for tr in min_tracks])
+    min_smr = np.array([tr['gt_std'] for tr in min_tracks])
+    
+    max_mvy = np.array([tr['vy_avg'] for tr in max_tracks])
+    max_svy = np.array([tr['vy_err'] for tr in max_tracks])
+    max_mvz = np.array([tr['vz_avg'] for tr in max_tracks])
+    max_svz = np.array([tr['vz_err'] for tr in max_tracks])
+    max_mmr = np.array([tr['gt_avg'] for tr in max_tracks])
+    max_smr = np.array([tr['gt_std'] for tr in max_tracks])
+        
+    print(f'f = {f}')
+    # print('         \t   Vy     \t    Vz     \t    Melt rate ' )
+    
+    mean_vy = np.mean(min_mvy)
+    std_vy = np.sqrt( np.var(min_mvy, ddof=1) + np.mean(min_svy**2) )
+    
+    mean_vz = np.mean(min_mvz)
+    std_vz = np.sqrt( np.var(min_mvz, ddof=1) + np.mean(min_svz**2) )
+    
+    mean_mr = np.mean(min_mmr)
+    std_mr = np.sqrt( np.var(min_mmr, ddof=1) + np.mean(min_smr**2) )
+    
+    vys_mi.append(mean_vy); vzs_mi.append(mean_vz); mrs_mi.append(mean_mr) 
+    vys_si.append(std_vy); vzs_si.append(std_vz); mrs_si.append(std_mr) 
+    
+    # print(f'Mean Min : \t {mean_vy:.3f} mm/s \t {mean_vz:.3f} mm/s \t {mean_mr:.3f} mm/s ' )
+    # print(f'Error Min: \t {std_vy:.3f} mm/s \t {std_vz:.3f} mm/s \t {std_mr:.3f} mm/s ' )
+    
+    mean_vy = np.mean(max_mvy)
+    std_vy = np.sqrt( np.var(max_mvy, ddof=1) + np.mean(max_svy**2) )
+    
+    mean_vz = np.mean(max_mvz)
+    std_vz = np.sqrt( np.var(max_mvz, ddof=1) + np.mean(max_svz**2) )
+    
+    mean_mr = np.mean(max_mmr)
+    std_mr = np.sqrt( np.var(max_mmr, ddof=1) + np.mean(max_smr**2) )
+    
+    vys_ma.append(mean_vy); vzs_ma.append(mean_vz); mrs_ma.append(mean_mr) 
+    vys_sa.append(std_vy); vzs_sa.append(std_vz); mrs_sa.append(std_mr) 
+    
+    # print(f'Mean Max : \t {mean_vy:.3f} mm/s \t {mean_vz:.3f} mm/s \t {mean_mr:.3f} mm/s ' )
+    # print(f'Error Max: \t {std_vy:.3f} mm/s \t {std_vz:.3f} mm/s \t {std_mr:.3f} mm/s ' )
+    
 
+vys_mi, vzs_mi, mrs_mi = np.array(vys_mi), np.array(vzs_mi), np.array(mrs_mi)
+vys_si, vzs_si, mrs_si = np.array(vys_si), np.array(vzs_si), np.array(mrs_si)
+vys_ma, vzs_ma, mrs_ma = np.array(vys_ma), np.array(vzs_ma), np.array(mrs_ma)
+vys_sa, vzs_sa, mrs_sa = np.array(vys_sa), np.array(vzs_sa), np.array(mrs_sa)
+vys_mi[8], vys_ma[8] = np.nan, np.nan 
+
+#%%
+
+
+fig, ax = plt.subplots(1,1, layout='constrained')
+
+# plt.errorbar(np.arange(9), vys_mi, yerr = vys_si, fmt='.', label='Minima vy' )
+# plt.errorbar(np.arange(9), vys_ma, yerr = vys_sa, fmt='.', label='Maxima vy' )
+# plt.errorbar(np.arange(9), vzs_mi, yerr = vzs_si, fmt='.', label='Minima vz' )
+# plt.errorbar(np.arange(9), vzs_ma, yerr = vzs_sa, fmt='.', label='Maxima vz' )
+
+angles_mi, angles_ma = np.arctan( mrs_mi / vys_mi )*180/np.pi, np.arctan( mrs_ma / vys_ma )*180/np.pi
+angles_si = (180 / np.pi) * np.sqrt( vys_mi**2 * mrs_si**2 + mrs_mi**2 * vys_si**2 ) / (vys_mi**2 + mrs_mi**2)
+angles_sa = (180 / np.pi) * np.sqrt( vys_ma**2 * mrs_sa**2 + mrs_ma**2 * vys_sa**2 ) / (vys_ma**2 + mrs_ma**2)
+
+ax.errorbar(mres, angles_mi, yerr = angles_si, fmt='.', label='Minima', capsize=3 )
+ax.errorbar(mres, angles_ma, yerr = angles_sa, fmt='.', label='Maxima', capsize=3 )
+
+ax.set_xlabel('Re')
+ax.set_ylabel(r'$\phi$ (°)')
+
+ax.legend(loc='upper left')
 plt.show()
 
 
+fs = [0,4,5,6,7]
+mmi_ag, mma_ag = np.mean(angles_mi[fs]), np.mean(angles_ma[fs])
+smi_ag = np.sqrt( np.var(angles_mi[fs], ddof=1) + np.mean(angles_si[fs]**2) )
+sma_ag = np.sqrt( np.var(angles_ma[fs], ddof=1) + np.mean(angles_sa[fs]**2) )
 
+print( 'Minima \t Maxima')
+print(f'{mmi_ag:.1f} \t {mma_ag:.1f} ')
+print(f'{smi_ag:.1f} \t {sma_ag:.1f} ')
 
+#%%
+plt.rcParams.update({'font.size':16})
+# Visualize local melt rates
+fs = [3,1,0,4]
+line_val = 70
 
+fig, ax = plt.subplots(1,4, figsize=(12, 4), layout='constrained', sharey=True, sharex=False)
 
+for j,f in enumerate(fs):
+
+    path = '/Volumes/Ice blocks/Scan water channel/'+ all_folders[f] +'/'
+    surface = True
+    channel = True
+    
+    rec_t, rec_x, rec_y, rec_z, back_t, back_x, tiempo, Q_tunnel, T_amb, T_top, T_bot = get_data_grid(path, starts[f], ends[f] )
+    
+    ll = np.where(rec_z[0] == line_val)[0][0]
+    print(rec_x.shape)
+    print(rec_z[0,ll])
+    print()
+
+    if f==0: rec_x[16] = np.nan
+    elif f==3: rec_x[68:71] = np.nan
+    elif f==4: rec_x, rec_t = rec_x[:-2], rec_t[:-2] # removed mostly for melt rates
+    elif f==2: 
+        back_t, back_x = back_t[:-1], back_x[:-1]
+        rec_x[:,618:1130,50:] = np.nan
+        
+    rec_f = fill_reconstruction(rec_x, sigma=1)
+    rec_back = np.interp(rec_t, back_t, back_x )
+    
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+        warnings.filterwarnings("ignore", message="Mean of empty slice")
+        warnings.filterwarnings("ignore", message="invalid value encountered in divide")
+    
+        gt, melt_rate, _ = calculate_melt_rate(f, rec_x, rec_back, sigmas=[2,10,2], time_val=True, integral=True, smooth=True, slope_v='all' )
+        
+        tempt = temp_t(T_top, T_bot, rec_t, tiempo)
+        mean_x, std_x = np.nanmedian(rec_x, axis=(1,2)), np.nanstd(rec_x, axis=(1,2))
+        med_Q, std_Q = np.median(Q_tunnel), np.std(Q_tunnel) 
+        
+        ushearT = med_Q / mean_x * 25/27 #np.median(Q_tunnel) / ( mean_x /1000 * 0.3) / 3600
+        ushearT_s = 25/27 * np.sqrt( ( std_Q / mean_x )**2 + ( med_Q * std_x / mean_x**2 )**2 )
+        ReT = ushearT * mean_x/1000*lwidth / nu_visco(tempt)
+        res = np.nanmean(ReT)
+
+    gt_dev = gt - np.nanmean(gt, axis=1, keepdims=True)
+    vmax_gt = np.nanmax(np.abs(gt_dev))
+    norm_gt = plt.Normalize(-vmax_gt, vmax_gt)
+    
+    cmap = 'seismic'
+
+    nt, ny, nx = rec_x.shape   
+    if f == 3: nt, ny, nx = rec_x[:85].shape   
+    for i in range(0, nt, nt//10):
+        y_line = rec_y[:, ll]
+        x_line = rec_x[i, :, ll] + rec_back[i]
+        gt_line = gt[i, :, ll]
+        lc = plot_colored_line( ax[j], y_line, x_line, gt_line, norm=norm_gt, cmap=cmap, linewidth=2 )
+        ax[j].autoscale()
+    # Colorbar
+    sm = plt.cm.ScalarMappable(norm=norm_gt, cmap=cmap)
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax[j], label=r'$\dot{h} - \langle h \rangle_{x}$')
+    
+    ax[j].set_xlabel(r'$z$ (mm)')
+    
+    re_app = np.nanmean(res)
+    re_app = round(re_app, -int(np.floor(np.log10(abs(re_app))))+1)
+    ax[j].set_title(f'Re = {re_app:.0f}')
+    
+ax[0].set_ylabel(r'$x$ (mm)')
+
+filename = '/Volumes/Ice blocks/Scan water channel/Figures/local_mr.pdf'
+# plt.savefig(filename, dpi=200, bbox_inches='tight')
+
+plt.show()
+    
 
 
 
@@ -2977,6 +3174,20 @@ plt.show()
 
 
 
+
+#%%
+
+
+
+
+
+#%%
+
+
+
+
+
+#%%
 
 
 
